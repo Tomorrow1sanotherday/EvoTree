@@ -1,0 +1,4 @@
+* text=auto
+
+proj/EvoTree/integrations/osworld_mcp/patches/*.patch text eol=lf -whitespace
+proj/EvoTree/scripts/*.sh text eol=lf

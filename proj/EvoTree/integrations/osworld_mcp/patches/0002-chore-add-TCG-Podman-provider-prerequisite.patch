@@ -1,0 +1,353 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: EvoTree <evotree@local>
+Date: Tue, 1 Sep 2026 07:18:21 +0000
+Subject: [PATCH 2/3] chore-add-TCG-Podman-provider-prerequisite
+
+
+diff --git a/desktop_env/providers/docker/provider.py b/desktop_env/providers/docker/provider.py
+index 3d5cd20..61bfbc8 100644
+--- a/desktop_env/providers/docker/provider.py
++++ b/desktop_env/providers/docker/provider.py
+@@ -1,6 +1,8 @@
++import base64
+ import logging
+ import os
+ import platform
++import subprocess
+ import time
+ import docker
+ import psutil
+@@ -32,24 +34,20 @@ class DockerProvider(Provider):
+         self.container = None
+         self.environment = {"DISK_SIZE": "32G", "RAM_SIZE": "4G", "CPU_CORES": "4"}  # Modify if needed
+ 
+-        temp_dir = Path(os.getenv('TEMP') if platform.system() == 'Windows' else '/tmp')
++        temp_dir = Path(os.getenv("TEMP") if platform.system() == "Windows" else "/tmp")
+         self.lock_file = temp_dir / "docker_port_allocation.lck"
+         self.lock_file.parent.mkdir(parents=True, exist_ok=True)
+ 
+     def _get_used_ports(self):
+         """Get all currently used ports (both system and Docker)."""
+-        # Get system ports
+         system_ports = set(conn.laddr.port for conn in psutil.net_connections())
+-        
+-        # Get Docker container ports
+         docker_ports = set()
+         for container in self.client.containers.list():
+-            ports = container.attrs['NetworkSettings']['Ports']
++            ports = container.attrs["NetworkSettings"]["Ports"]
+             if ports:
+                 for port_mappings in ports.values():
+                     if port_mappings:
+-                        docker_ports.update(int(p['HostPort']) for p in port_mappings)
+-        
++                        docker_ports.update(int(p["HostPort"]) for p in port_mappings)
+         return system_ports | docker_ports
+ 
+     def _get_available_port(self, start_port: int) -> int:
+@@ -62,10 +60,10 @@ class DockerProvider(Provider):
+             port += 1
+         raise PortAllocationError(f"No available ports found starting from {start_port}")
+ 
+-    def _wait_for_vm_ready(self, timeout: int = 300):
++    def _wait_for_vm_ready(self, timeout: int = 600):
+         """Wait for VM to be ready by checking screenshot endpoint."""
+         start_time = time.time()
+-        
++
+         def check_screenshot():
+             try:
+                 response = requests.get(
+@@ -81,50 +79,219 @@ class DockerProvider(Provider):
+                 return True
+             logger.info("Checking if virtual machine is ready...")
+             time.sleep(RETRY_INTERVAL)
+-        
++
+         raise TimeoutError("VM failed to become ready within timeout period")
+ 
++    # --- OSWorld-MCP TCG black-screen fix --------------------------------
++    # Under TCG (no KVM/GPU) GNOME mutter uses Mesa llvmpipe, whose LLVM JIT
++    # aborts on the emulated -cpu max ("LLVM ERROR: 64-bit code requested on a
++    # subtarget that doesn't support it!"). gnome-shell then crash-loops and the
++    # desktop never renders -> /screenshot is all black. Forcing the softpipe
++    # rasterizer (pure C, no LLVM JIT) makes the desktop render. The base qcow2
++    # is read-only COW per boot so we inject the env at runtime after boot.
++    def _vm_exec(self, command: str, timeout: int = 60):
++        try:
++            r = requests.post(
++                f"http://localhost:{self.server_port}/execute",
++                json={"command": command, "shell": True},
++                timeout=timeout,
++            )
++            try:
++                return r.json()
++            except Exception:
++                return {"status": "http", "output": None, "error": r.text[:200]}
++        except Exception as e:
++            return {"status": "exc", "output": None, "error": str(e)}
++
++    def _screenshot_brightness(self):
++        """Return mean luma of /screenshot, or None on failure. ~0 => black."""
++        try:
++            from PIL import Image, ImageStat
++            import io
++            r = requests.get(f"http://localhost:{self.server_port}/screenshot", timeout=20)
++            if r.status_code != 200:
++                return None
++            im = Image.open(io.BytesIO(r.content)).convert("L")
++            return float(ImageStat.Stat(im).mean[0])
++        except Exception:
++            return None
++
++    def _apply_softpipe_fix(self):
++        if os.getenv("OSWORLD_SOFTPIPE_FIX", "1") == "0":
++            return
++        pw = os.getenv("OSWORLD_VM_SUDO_PW", "password")
++
++        mean = self._screenshot_brightness()
++        if mean is not None and mean > 2.0:
++            logger.info(f"[softpipe] desktop already rendering (mean={mean:.1f}); no fix needed")
++            return
++        logger.warning(f"[softpipe] black screen detected (mean={mean}); applying softpipe fix "
++                        "(gnome-shell llvmpipe LLVM-JIT crash-loop under TCG)")
++
++        # User systemd-manager env so the (re)started gnome-shell uses softpipe.
++        # NOTE: we deliberately do NOT restart gdm or the control server -- that
++        # tears down Xorg and breaks the control server's Xlib connection. Instead
++        # we set the env on the user manager and let gnome-shell restart pick it up.
++        uenv = ("export XDG_RUNTIME_DIR=/run/user/1000; "
++                "export DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus; "
++                "export DISPLAY=:0; ")
++
++        # 1) persist to /etc/environment (belt-and-suspenders for later restarts)
++        self._vm_exec(
++            f"echo {pw} | sudo -S bash -c "
++            "\"grep -q GALLIUM_DRIVER /etc/environment || "
++            "printf 'GALLIUM_DRIVER=softpipe\\nLIBGL_ALWAYS_SOFTWARE=1\\n"
++            "MESA_LOADER_DRIVER_OVERRIDE=softpipe\\n' >> /etc/environment\""
++        )
++        # 2) set softpipe on the user systemd manager (inherited by gnome-shell on next start)
++        self._vm_exec(uenv + "systemctl --user set-environment "
++                             "GALLIUM_DRIVER=softpipe LIBGL_ALWAYS_SOFTWARE=1 "
++                             "MESA_LOADER_DRIVER_OVERRIDE=softpipe")
++        # 3) force a gnome-shell restart (manual systemctl start is refused for this
++        #    unit, but killing the process triggers systemd's auto-restart with the
++        #    new env). Xorg + control server are untouched.
++        self._vm_exec(uenv + "pkill -KILL -x gnome-shell")
++
++        # 4) wait until the desktop actually renders (softpipe under TCG is slow)
++        deadline = time.time() + int(os.getenv("OSWORLD_SOFTPIPE_TIMEOUT", "300"))
++        while time.time() < deadline:
++            mean = self._screenshot_brightness()
++            if mean is not None and mean > 2.0:
++                logger.info(f"[softpipe] desktop rendered (mean={mean:.1f})")
++                return
++            logger.info("[softpipe] waiting for desktop to render...")
++            time.sleep(5)
++        logger.warning("[softpipe] screen still black after fix; continuing anyway")
++
++    # --- OSWorld-MCP per-boot provisioning -------------------------------
++    # The base qcow2 is read-only (COW per boot), so the MCP server bits don't
++    # persist. When OSWORLD_MCP_INJECT=1, install deps + push the server/client
++    # into the freshly-booted VM so desktop_env's `--action_space mcp` launch
++    # (cd ~/mcp_server && bash launch_server.sh) works. Files are staged on the
++    # host at /tmp/mcp_server.tgz and /tmp/osworld_mcp_client_slim.py.
++    def _inject_mcp(self):
++        if os.getenv("OSWORLD_MCP_INJECT", "0") != "1":
++            return
++        mirror = ("-i https://mirrors.aliyun.com/pypi/simple/ "
++                  "--trusted-host mirrors.aliyun.com")
++
++        # skip if already present (e.g. a re-used VM)
++        chk = self._vm_exec("python3 -c 'import fastmcp,playwright' 2>&1; echo rc=$?")
++        if chk and "rc=0" in (chk.get("output") or ""):
++            logger.info("[mcp] deps already present in VM")
++        else:
++            logger.info("[mcp] installing fastmcp+playwright in VM (slow over slirp, ~6 min)...")
++            self._vm_exec(
++                "rm -f /tmp/mcpdeps.done; nohup bash -c "
++                f"'python3 -m pip install --user {mirror} fastmcp playwright "
++                ">/tmp/mcpdeps.log 2>&1; touch /tmp/mcpdeps.done' >/dev/null 2>&1 &")
++            deadline = time.time() + int(os.getenv("OSWORLD_MCP_DEP_TIMEOUT", "900"))
++            while time.time() < deadline:
++                out = self._vm_exec("test -f /tmp/mcpdeps.done && echo DONE || echo RUN")
++                if out and "DONE" in (out.get("output") or ""):
++                    break
++                logger.info("[mcp] waiting for deps install...")
++                time.sleep(15)
++            v = self._vm_exec("python3 -c 'import fastmcp,playwright; print(\"ok\")' 2>&1")
++            logger.info(f"[mcp] deps verify: {(v or {}).get('output','').strip()}")
++
++        # push mcp_server.tgz + slim client from host /tmp into the VM
++        try:
++            tgz = base64.b64encode(open("/tmp/mcp_server.tgz", "rb").read()).decode()
++            self._vm_exec(
++                "python3 -c \"import base64;open('/home/user/mcp_server.tgz','wb')"
++                f".write(base64.b64decode('{tgz}'))\"", timeout=180)
++            self._vm_exec("cd /home/user && rm -rf mcp_server && tar xzf mcp_server.tgz")
++            # launch_server.sh: disable slow PyPI version-check + banner, and
++            # DETACH the server (setsid + bg + log) so it survives the fire-and-forget
++            # _launch_setup call (a foreground `python server.py` gets reaped).
++            self._vm_exec(
++                "printf 'export FASTMCP_CHECK_FOR_UPDATES=off\\n"
++                "export FASTMCP_SHOW_SERVER_BANNER=false\\n"
++                "setsid python3 server.py >/tmp/mcpserver.log 2>&1 </dev/null &\\n' "
++                "> /home/user/mcp_server/launch_server.sh")
++            client = base64.b64encode(open("/tmp/osworld_mcp_client_slim.py", "rb").read()).decode()
++            self._vm_exec(
++                "python3 -c \"import base64;open('/home/user/osworld_mcp_client.py','wb')"
++                f".write(base64.b64decode('{client}'))\"", timeout=120)
++            logger.info("[mcp] server files + slim client injected into VM")
++        except Exception as e:
++            logger.error(f"[mcp] file injection failed: {e}")
++
+     def start_emulator(self, path_to_vm: str, headless: bool, os_type: str):
+         # Use a single lock for all port allocation and container startup
+         lock = FileLock(str(self.lock_file), timeout=LOCK_TIMEOUT)
+-        
++
++        # --- OSWorld-MCP podman / host-net smoke-test config (toggle via OSWORLD_PODMAN=0) ---
++        use_hostnet = os.getenv("OSWORLD_PODMAN", "1") != "0"
++        image = os.getenv("OSWORLD_IMAGE", "localhost/osworld-patched:latest")
++
+         try:
+             with lock:
+-                # Allocate all required ports
+-                self.vnc_port = self._get_available_port(8006)
+-                self.server_port = self._get_available_port(5000)
+-                self.chromium_port = self._get_available_port(9222)
+-                self.vlc_port = self._get_available_port(8080)
+-
+-                # Start container while still holding the lock
+-                # Check if KVM is available
+-                devices = []
+-                if os.path.exists("/dev/kvm"):
+-                    devices.append("/dev/kvm")
+-                    logger.info("KVM device found, using hardware acceleration")
++                if use_hostnet:
++                    # podman rootless + host networking + QEMU slirp (NETWORK=user):
++                    # the VM-internal ports are forwarded by QEMU hostfwd onto the HOST
++                    # localhost on the SAME port numbers, so no docker port publishing.
++                    self.vnc_port = 8006
++                    self.server_port = 5000
++                    self.chromium_port = 9222
++                    self.vlc_port = 8080
++                    self.environment.update({
++                        "NETWORK": "user",
++                        "KVM": "N",
++                        "DISPLAY": "vnc",
++                        "USER_PORTS": f"{self.server_port},{self.chromium_port},{self.vlc_port}",
++                    })
++                    logger.info(f"[podman host-net] image={image} ports fixed to VM-native "
++                                f"VNC:{self.vnc_port} Server:{self.server_port} "
++                                f"Chrome:{self.chromium_port} VLC:{self.vlc_port}")
++                    self.container = self.client.containers.run(
++                        image,
++                        environment=self.environment,
++                        network_mode="host",
++                        pid_mode="host",
++                        volumes={
++                            os.path.abspath(path_to_vm): {
++                                "bind": "/System.qcow2",
++                                "mode": "ro"
++                            }
++                        },
++                        detach=True
++                    )
+                 else:
+-                    self.environment["KVM"] = "N"
+-                    logger.warning("KVM device not found, running without hardware acceleration (will be slower)")
+-
+-                self.container = self.client.containers.run(
+-                    "happysixd/osworld-docker",
+-                    environment=self.environment,
+-                    cap_add=["NET_ADMIN"],
+-                    devices=devices,
+-                    volumes={
+-                        os.path.abspath(path_to_vm): {
+-                            "bind": "/System.qcow2",
+-                            "mode": "ro"
+-                        }
+-                    },
+-                    ports={
+-                        8006: self.vnc_port,
+-                        5000: self.server_port,
+-                        9222: self.chromium_port,
+-                        8080: self.vlc_port
+-                    },
+-                    detach=True
+-                )
++                    # original docker path (unchanged)
++                    self.vnc_port = self._get_available_port(8006)
++                    self.server_port = self._get_available_port(5000)
++                    self.chromium_port = self._get_available_port(9222)
++                    self.vlc_port = self._get_available_port(8080)
++
++                    devices = []
++                    if os.path.exists("/dev/kvm"):
++                        devices.append("/dev/kvm")
++                        logger.info("KVM device found, using hardware acceleration")
++                    else:
++                        self.environment["KVM"] = "N"
++                        logger.warning("KVM device not found, running without hardware acceleration (will be slower)")
++
++                    self.container = self.client.containers.run(
++                        image,
++                        environment=self.environment,
++                        cap_add=["NET_ADMIN"],
++                        devices=devices,
++                        volumes={
++                            os.path.abspath(path_to_vm): {
++                                "bind": "/System.qcow2",
++                                "mode": "ro"
++                            }
++                        },
++                        ports={
++                            8006: self.vnc_port,
++                            5000: self.server_port,
++                            9222: self.chromium_port,
++                            8080: self.vlc_port
++                        },
++                        detach=True
++                    )
+ 
+             logger.info(f"Started container with ports - VNC: {self.vnc_port}, "
+                        f"Server: {self.server_port}, Chrome: {self.chromium_port}, VLC: {self.vlc_port}")
+@@ -132,6 +299,13 @@ class DockerProvider(Provider):
+             # Wait for VM to be ready
+             self._wait_for_vm_ready()
+ 
++            # Fix the TCG black-screen (llvmpipe crash) if running under host-net/podman
++            if use_hostnet:
++                self._apply_softpipe_fix()
++
++            # Provision the MCP server inside the VM (for --action_space mcp)
++            self._inject_mcp()
++
+         except Exception as e:
+             # Clean up if anything goes wrong
+             if self.container:
+@@ -154,8 +328,6 @@ class DockerProvider(Provider):
+         self.stop_emulator(path_to_vm)
+ 
+     def stop_emulator(self, path_to_vm: str, region=None, *args, **kwargs):
+-        # Note: region parameter is ignored for Docker provider
+-        # but kept for interface consistency with other providers
+         if self.container:
+             logger.info("Stopping VM...")
+             try:
+@@ -170,3 +342,13 @@ class DockerProvider(Provider):
+                 self.vnc_port = None
+                 self.chromium_port = None
+                 self.vlc_port = None
++        # Under --pid=host the in-container QEMU is a host process; a forced
++        # container teardown can orphan it, leaking host ports (5000/7100/...)
++        # and blocking the next launch. Reap any leftover QEMU. (single-env smoke
++        # test; disable via OSWORLD_KILL_QEMU=0 for concurrent multi-env runs.)
++        if os.getenv("OSWORLD_KILL_QEMU", "1") != "0":
++            try:
++                subprocess.run(["pkill", "-9", "-x", "qemu"], check=False,
++                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
++            except Exception as e:
++                logger.warning(f"qemu reap failed: {e}")

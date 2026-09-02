@@ -1,0 +1,162 @@
+diff --git a/desktop_env/controllers/setup.py b/desktop_env/controllers/setup.py
+index 923685f..6d2fda7 100644
+--- a/desktop_env/controllers/setup.py
++++ b/desktop_env/controllers/setup.py
+@@ -37,6 +37,21 @@ init_proxy_pool(PROXY_CONFIG_FILE)  # initialize the global proxy pool
+ 
+ MAX_RETRIES = 20
+ 
++
++def _download_candidates(url: str) -> list[str]:
++    """Return the configured Hugging Face mirror followed by the origin URL.
++
++    The cache key remains based on the caller's original URL, so changing the
++    endpoint does not duplicate files already downloaded by OSWorld.
++    """
++    endpoint = os.environ.get("HF_ENDPOINT", "").strip().rstrip("/")
++    if not endpoint or "huggingface.co" not in url:
++        return [url]
++    if not endpoint.startswith(("http://", "https://")):
++        endpoint = "https://" + endpoint
++    mirrored = url.replace("https://huggingface.co", endpoint, 1)
++    return [mirrored, url] if mirrored != url else [url]
++
+ class SetupController:
+     def __init__(self, vm_ip: str, server_port: int = 5000, chromium_port: int = 9222, vlc_port: int = 8080, cache_dir: str = "cache", client_password: str = "", screen_width: int = 1920, screen_height: int = 1080):
+         self.vm_ip: str = vm_ip
+@@ -124,43 +139,55 @@ class SetupController:
+                 raise Exception(f"Setup Download - Invalid URL ({url}) or path ({path}).")
+ 
+             if not os.path.exists(cache_path):
+-                logger.info(f"Cache file not found, downloading from {url} to {cache_path}")
++                download_urls = _download_candidates(url)
++                logger.info(
++                    f"Cache file not found, downloading from {download_urls} to {cache_path}"
++                )
+                 max_retries = 3
+                 downloaded = False
+-                e = None
+-                for i in range(max_retries):
+-                    try:
+-                        logger.info(f"Download attempt {i+1}/{max_retries} for {url}")
+-                        response = requests.get(url, stream=True, timeout=300)  # Add 5 minute timeout
+-                        response.raise_for_status()
+-                        
+-                        # Get file size if available
+-                        total_size = int(response.headers.get('content-length', 0))
+-                        if total_size > 0:
+-                            logger.info(f"File size: {total_size / (1024*1024):.2f} MB")
++                for download_url in download_urls:
++                    for i in range(max_retries):
++                        try:
++                            logger.info(
++                                f"Download attempt {i+1}/{max_retries} for {download_url}"
++                            )
++                            response = requests.get(
++                                download_url, stream=True, timeout=300
++                            )  # Add 5 minute timeout
++                            response.raise_for_status()
++
++                            # Get file size if available
++                            total_size = int(response.headers.get('content-length', 0))
++                            if total_size > 0:
++                                logger.info(f"File size: {total_size / (1024*1024):.2f} MB")
++
++                            downloaded_size = 0
++                            with open(cache_path, 'wb') as f:
++                                for chunk in response.iter_content(chunk_size=8192):
++                                    if chunk:
++                                        f.write(chunk)
++                                        downloaded_size += len(chunk)
++                                        if total_size > 0 and downloaded_size % (1024*1024) == 0:  # Log every MB
++                                            progress = (downloaded_size / total_size) * 100
++                                            logger.info(f"Download progress: {progress:.1f}%")
++
++                            logger.info(f"File downloaded successfully to {cache_path} ({downloaded_size / (1024*1024):.2f} MB)")
++                            downloaded = True
++                            break
+ 
+-                        downloaded_size = 0
+-                        with open(cache_path, 'wb') as f:
+-                            for chunk in response.iter_content(chunk_size=8192):
+-                                if chunk:
+-                                    f.write(chunk)
+-                                    downloaded_size += len(chunk)
+-                                    if total_size > 0 and downloaded_size % (1024*1024) == 0:  # Log every MB
+-                                        progress = (downloaded_size / total_size) * 100
+-                                        logger.info(f"Download progress: {progress:.1f}%")
+-                        
+-                        logger.info(f"File downloaded successfully to {cache_path} ({downloaded_size / (1024*1024):.2f} MB)")
+-                        downloaded = True
++                        except requests.RequestException as e:
++                            logger.error(
++                                f"Failed to download {download_url} caused by {e}. Retrying... ({max_retries - i - 1} attempts left)"
++                            )
++                            # Clean up partial download
++                            if os.path.exists(cache_path):
++                                os.remove(cache_path)
++                    if downloaded:
+                         break
+-
+-                    except requests.RequestException as e:
+-                        logger.error(
+-                            f"Failed to download {url} caused by {e}. Retrying... ({max_retries - i - 1} attempts left)")
+-                        # Clean up partial download
+-                        if os.path.exists(cache_path):
+-                            os.remove(cache_path)
+                 if not downloaded:
+-                    raise requests.RequestException(f"Failed to download {url}. No retries left.")
++                    raise requests.RequestException(
++                        f"Failed to download {url} from configured endpoints. No retries left."
++                    )
+ 
+             form = MultipartEncoder({
+                 "file_path": path,
+@@ -816,25 +843,31 @@ class SetupController:
+         if not os.path.exists(cache_path):
+             max_retries = 3
+             downloaded = False
+-            e = None
+-            for i in range(max_retries):
+-                try:
+-                    response = requests.get(db_url, stream=True)
+-                    response.raise_for_status()
++            last_error = None
++            for download_url in _download_candidates(db_url):
++                for i in range(max_retries):
++                    try:
++                        response = requests.get(download_url, stream=True, timeout=300)
++                        response.raise_for_status()
+ 
+-                    with open(cache_path, 'wb') as f:
+-                        for chunk in response.iter_content(chunk_size=8192):
+-                            if chunk:
+-                                f.write(chunk)
+-                    logger.info("File downloaded successfully")
+-                    downloaded = True
+-                    break
++                        with open(cache_path, 'wb') as f:
++                            for chunk in response.iter_content(chunk_size=8192):
++                                if chunk:
++                                    f.write(chunk)
++                        logger.info("File downloaded successfully")
++                        downloaded = True
++                        break
+ 
+-                except requests.RequestException as e:
+-                    logger.error(
+-                        f"Failed to download {db_url} caused by {e}. Retrying... ({max_retries - i - 1} attempts left)")
++                    except requests.RequestException as e:
++                        last_error = e
++                        logger.error(
++                            f"Failed to download {download_url} caused by {e}. Retrying... ({max_retries - i - 1} attempts left)")
++                if downloaded:
++                    break
+             if not downloaded:
+-                raise requests.RequestException(f"Failed to download {db_url}. No retries left. Error: {e}")
++                raise requests.RequestException(
++                    f"Failed to download {db_url} from configured endpoints. No retries left. Error: {last_error}"
++                )
+         else:
+             logger.info("File already exists in cache directory")
+         # copy a new history file in the tmp folder

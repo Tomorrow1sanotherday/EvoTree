@@ -1,0 +1,159 @@
+"""在线 agent 接入层。
+
+本模块不绑定某个具体的 agent 框架，只提供稳定 hook，把 EvoTree 放进任意
+GUI/工具 agent 的决策循环：
+
+    runtime.begin(instruction)
+    result = runtime.before_model(observation, candidate_tools)
+    prompt = inject_cheatsheet(original_prompt, result.text)
+    action = agent.generate(prompt)
+    runtime.after_action(observation, action, next_observation=...)
+    runtime.finish(success=True, score=1.0)
+
+设计边界：
+    - ``before_model`` 只读记忆，不修改森林；
+    - ``after_action`` 只暂存在线轨迹，不提前写成功统计；
+    - ``finish`` 拿到客观的 episode-level 结果后，一次性写入；
+    - agent 原始动作始终保留，清洗交给注入的 Distiller；
+    - write_enabled=False 时，冻结期间既不更新记忆，也不落盘。
+
+EvoTree 不负责执行动作、不改变 agent 的决策权，只在模型调用前提供 advisory
+小抄，并在 episode 结束时记录结果。
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Any, Mapping, Optional
+
+from .episode import Episode, EpisodeStep, RuntimeStep
+from .memory import EvoTreeMemory
+from .retrieval import Cheatsheet, render_cheatsheet
+
+
+@dataclass(frozen=True)
+class BeforeModelResult:
+    """模型调用前的记忆结果。"""
+
+    cheatsheet: Cheatsheet
+    text: str
+    reranked_tools: list[str]
+
+
+class EvoTreeRuntime:
+    """EvoTree 在线运行时：管理一轮 agent episode 的 read/write hook。"""
+
+    def __init__(self, memory: EvoTreeMemory) -> None:
+        self.memory = memory
+        self.instruction: Optional[str] = None
+        self._steps: list[RuntimeStep] = []
+
+    @property
+    def active(self) -> bool:
+        """当前是否有已开始但尚未 finish 的 episode。"""
+        return self.instruction is not None
+
+    def begin(self, instruction: str) -> None:
+        """开始一轮任务，并清空上一轮未提交的动作。"""
+        if not instruction.strip():
+            raise ValueError("instruction must not be empty")
+        self.instruction = instruction
+        self._steps.clear()
+
+    def before_model(
+        self,
+        observation: dict[str, Any],
+        candidate_tools: Optional[list[str]] = None,
+    ) -> BeforeModelResult:
+        """在每次模型调用前检索记忆。"""
+        if self.instruction is None:
+            raise RuntimeError("Call begin() before before_model()")
+        cheatsheet = self.memory.read_cheatsheet(
+            self.instruction, observation, candidate_tools
+        )
+        return BeforeModelResult(
+            cheatsheet=cheatsheet,
+            text=render_cheatsheet(cheatsheet),
+            reranked_tools=list(cheatsheet.reranked_tools),
+        )
+
+    def after_action(
+        self,
+        observation: dict[str, Any],
+        raw_action: dict[str, Any],
+        *,
+        next_observation: Optional[dict[str, Any]] = None,
+        note: Optional[str] = None,
+        metadata: Optional[Mapping[str, Any]] = None,
+    ) -> None:
+        """动作执行后暂存一步，不更新森林统计。"""
+        if self.instruction is None:
+            raise RuntimeError("Call begin() before after_action()")
+        self._steps.append(
+            RuntimeStep(
+                step_index=len(self._steps),
+                observation=dict(observation),
+                raw_action=dict(raw_action),
+                next_observation=(
+                    dict(next_observation) if next_observation is not None else None
+                ),
+                note=note,
+                metadata=dict(metadata or {}),
+            )
+        )
+
+    def finish(
+        self,
+        *,
+        success: Optional[bool] = None,
+        score: Optional[float] = None,
+        metadata: Optional[Mapping[str, Any]] = None,
+    ) -> Episode:
+        """结束一轮任务，用客观 episode-level 结果写入记忆。"""
+        if self.instruction is None:
+            raise RuntimeError("Call begin() before finish()")
+        if success is None and score is None:
+            raise ValueError("finish requires success= or score=")
+        if score is not None:
+            score_success = score > 0
+            if success is not None and success != score_success:
+                raise ValueError("success and score disagree")
+            success = score_success
+
+        episode = Episode(
+            instruction=self.instruction,
+            steps=tuple(
+                EpisodeStep(
+                    step_index=step.step_index,
+                    observation=step.observation,
+                    raw_action=step.raw_action,
+                    next_observation=(
+                        step.next_observation
+                        if step.next_observation is not None
+                        else (
+                            self._steps[index + 1].observation
+                            if index + 1 < len(self._steps)
+                            else None
+                        )
+                    ),
+                    note=step.note,
+                    metadata=step.metadata,
+                )
+                for index, step in enumerate(self._steps)
+            ),
+            success=bool(success),
+            source="online",
+            metadata={"score": score, **dict(metadata or {})},
+        )
+        self.memory.write_episode(episode)
+        self.memory.save()
+        self.instruction = None
+        self._steps.clear()
+        return episode
+
+
+def inject_cheatsheet(prompt: str, cheatsheet_text: str) -> str:
+    """把 advisory 小抄追加到 agent prompt；空小抄不改变原 prompt。"""
+    if not cheatsheet_text.strip():
+        return prompt
+    return f"{prompt.rstrip()}\n\n{cheatsheet_text.strip()}"

@@ -1,0 +1,51 @@
+diff --git a/desktop_env/providers/docker/provider.py b/desktop_env/providers/docker/provider.py
+index 1dbc9f7..ee226a7 100644
+--- a/desktop_env/providers/docker/provider.py
++++ b/desktop_env/providers/docker/provider.py
+@@ -276,22 +276,41 @@ class DockerProvider(Provider):
+             logger.info(f"[mcp] installing fastmcp={expected_fastmcp}+playwright in VM "
+                         "(slow over slirp, ~6 min)...")
+             self._vm_exec(
+-                "rm -f /tmp/mcpdeps.done; nohup bash -c "
+-                "'python3 -m pip uninstall -y fastmcp fastmcp-slim "
+-                ">/tmp/mcpdeps.log 2>&1; "
++                "rm -f /tmp/mcpdeps.done /tmp/mcpdeps.failed /tmp/mcpdeps.log; "
++                "nohup bash -c "
++                "'set -o pipefail; "
++                "python3 -m pip uninstall -y fastmcp fastmcp-slim "
++                ">/tmp/mcpdeps.log 2>&1 || true; "
+                 f"python3 -m pip install --user {mirror} "
+                 f"fastmcp=={expected_fastmcp} playwright "
+-                ">/tmp/mcpdeps.log 2>&1; touch /tmp/mcpdeps.done' >/dev/null 2>&1 &")
++                ">>/tmp/mcpdeps.log 2>&1 && touch /tmp/mcpdeps.done || touch /tmp/mcpdeps.failed' "
++                ">/dev/null 2>&1 &")
+             deadline = time.time() + int(os.getenv("OSWORLD_MCP_DEP_TIMEOUT", "900"))
+             while time.time() < deadline:
+-                out = self._vm_exec("test -f /tmp/mcpdeps.done && echo DONE || echo RUN")
++                out = self._vm_exec(
++                    "if test -f /tmp/mcpdeps.done; then echo DONE; "
++                    "elif test -f /tmp/mcpdeps.failed; then echo FAILED; "
++                    "else echo RUN; fi"
++                )
+                 if out and "DONE" in (out.get("output") or ""):
+                     break
++                if out and "FAILED" in (out.get("output") or ""):
++                    details = self._vm_exec("tail -n 80 /tmp/mcpdeps.log")
++                    logger.error(
++                        "[mcp] dependency install failed: %s",
++                        (details or {}).get("output", "").strip(),
++                    )
++                    raise RuntimeError("MCP dependency installation failed")
+                 logger.info("[mcp] waiting for deps install...")
+                 time.sleep(15)
+             v = self._vm_exec(verify_command)
+             logger.info(f"[mcp] deps verify: {(v or {}).get('output','').strip()}")
+             if f"ok {expected_fastmcp}" not in ((v or {}).get("output") or ""):
++                details = self._vm_exec("tail -n 80 /tmp/mcpdeps.log")
++                logger.error(
++                    "[mcp] dependency install log: %s",
++                    (details or {}).get("output", "").strip(),
++                )
+                 raise RuntimeError("MCP dependency verification failed")
+ 
+         # push mcp_server.tgz + slim client from host /tmp into the VM

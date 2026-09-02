@@ -1,0 +1,224 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: EvoTree <evotree@local>
+Date: Tue, 1 Sep 2026 07:18:21 +0000
+Subject: [PATCH 3/3] fix-scope-QEMU-cleanup-and-pin-FastMCP
+
+
+diff --git a/desktop_env/providers/docker/provider.py b/desktop_env/providers/docker/provider.py
+index 61bfbc8..1dbc9f7 100644
+--- a/desktop_env/providers/docker/provider.py
++++ b/desktop_env/providers/docker/provider.py
+@@ -2,11 +2,11 @@ import base64
+ import logging
+ import os
+ import platform
+-import subprocess
+ import time
+ import docker
+ import psutil
+ import requests
++from docker.errors import DockerException
+ from filelock import FileLock
+ from pathlib import Path
+ 
+@@ -32,12 +32,98 @@ class DockerProvider(Provider):
+         self.chromium_port = None
+         self.vlc_port = None
+         self.container = None
++        # QEMU runs in the host PID namespace in the shared-server smoke setup.
++        # Keep exact process identities so teardown cannot touch another job.
++        self._owned_qemu = {}
+         self.environment = {"DISK_SIZE": "32G", "RAM_SIZE": "4G", "CPU_CORES": "4"}  # Modify if needed
+ 
+         temp_dir = Path(os.getenv("TEMP") if platform.system() == "Windows" else "/tmp")
+         self.lock_file = temp_dir / "docker_port_allocation.lck"
+         self.lock_file.parent.mkdir(parents=True, exist_ok=True)
+ 
++    @staticmethod
++    def _is_qemu_process(proc):
++        try:
++            name = (proc.name() or "").lower()
++            command = " ".join(proc.cmdline() or [])
++            return name.startswith("qemu-system") or "qemu-system-" in command
++        except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
++            return False
++
++    def _remember_owned_qemu(self):
++        """Record QEMU descendants of this container before teardown."""
++        if self.container is None:
++            return
++        candidates = []
++        try:
++            state = self.container.attrs.get("State") or {}
++            container_pid = int(state.get("Pid") or 0)
++            if not container_pid:
++                self.container.reload()
++                state = self.container.attrs.get("State") or {}
++                container_pid = int(state.get("Pid") or 0)
++            if not container_pid:
++                raise ValueError("container PID unavailable")
++            container_proc = psutil.Process(container_pid)
++            candidates.extend(
++                [container_proc] + container_proc.children(recursive=True)
++            )
++        except (psutil.NoSuchProcess, psutil.AccessDenied,
++                psutil.ZombieProcess, ValueError, DockerException):
++            # Podman's Docker-compatible inspect can fail when the container's
++            # cgroup metadata disappears. Conmon still carries the exact full
++            # container ID, so its descendants provide a precise fallback.
++            container_id = getattr(self.container, "id", "")
++            if container_id:
++                for proc in psutil.process_iter(["name", "cmdline"]):
++                    try:
++                        name = (proc.info.get("name") or "").lower()
++                        command = " ".join(proc.info.get("cmdline") or [])
++                        if "conmon" in name and container_id in command:
++                            candidates.extend(proc.children(recursive=True))
++                    except (psutil.NoSuchProcess, psutil.AccessDenied,
++                            psutil.ZombieProcess):
++                        continue
++
++        for proc in candidates:
++            if self._is_qemu_process(proc):
++                try:
++                    command = " ".join(proc.cmdline() or [])
++                    self._owned_qemu[proc.pid] = (proc.create_time(), command)
++                    logger.info("Recorded owned QEMU pid=%s for exact teardown", proc.pid)
++                except (psutil.NoSuchProcess, psutil.AccessDenied,
++                        psutil.ZombieProcess):
++                    pass
++
++    def _reap_owned_qemu(self):
++        """Terminate only QEMU processes previously tied to this container."""
++        if not self._owned_qemu:
++            return
++
++        pending = []
++        for pid, (created, _command) in list(self._owned_qemu.items()):
++            try:
++                proc = psutil.Process(pid)
++                if (abs(proc.create_time() - created) > 1.0
++                        or not self._is_qemu_process(proc)):
++                    continue
++                proc.terminate()
++                logger.info("Terminating recorded QEMU pid=%s", proc.pid)
++                pending.append(proc)
++            except (psutil.NoSuchProcess, psutil.AccessDenied,
++                    psutil.ZombieProcess):
++                continue
++
++        _gone, alive = psutil.wait_procs(pending, timeout=5)
++        for proc in alive:
++            try:
++                if self._is_qemu_process(proc):
++                    proc.kill()
++            except (psutil.NoSuchProcess, psutil.AccessDenied,
++                    psutil.ZombieProcess):
++                pass
++        self._owned_qemu.clear()
++
+     def _get_used_ports(self):
+         """Get all currently used ports (both system and Docker)."""
+         system_ports = set(conn.laddr.port for conn in psutil.net_connections())
+@@ -176,14 +262,25 @@ class DockerProvider(Provider):
+                   "--trusted-host mirrors.aliyun.com")
+ 
+         # skip if already present (e.g. a re-used VM)
+-        chk = self._vm_exec("python3 -c 'import fastmcp,playwright' 2>&1; echo rc=$?")
+-        if chk and "rc=0" in (chk.get("output") or ""):
+-            logger.info("[mcp] deps already present in VM")
++        expected_fastmcp = "2.13.3"
++        verify_command = (
++            "python3 -c 'import importlib.metadata; import playwright; "
++            "from fastmcp.tools.tool import Tool; "
++            f"assert importlib.metadata.version(\"fastmcp\") == \"{expected_fastmcp}\"; "
++            f"print(\"ok {expected_fastmcp}\")' 2>&1"
++        )
++        chk = self._vm_exec(verify_command)
++        if chk and f"ok {expected_fastmcp}" in (chk.get("output") or ""):
++            logger.info(f"[mcp] compatible deps already present (fastmcp={expected_fastmcp})")
+         else:
+-            logger.info("[mcp] installing fastmcp+playwright in VM (slow over slirp, ~6 min)...")
++            logger.info(f"[mcp] installing fastmcp={expected_fastmcp}+playwright in VM "
++                        "(slow over slirp, ~6 min)...")
+             self._vm_exec(
+                 "rm -f /tmp/mcpdeps.done; nohup bash -c "
+-                f"'python3 -m pip install --user {mirror} fastmcp playwright "
++                "'python3 -m pip uninstall -y fastmcp fastmcp-slim "
++                ">/tmp/mcpdeps.log 2>&1; "
++                f"python3 -m pip install --user {mirror} "
++                f"fastmcp=={expected_fastmcp} playwright "
+                 ">/tmp/mcpdeps.log 2>&1; touch /tmp/mcpdeps.done' >/dev/null 2>&1 &")
+             deadline = time.time() + int(os.getenv("OSWORLD_MCP_DEP_TIMEOUT", "900"))
+             while time.time() < deadline:
+@@ -192,8 +289,10 @@ class DockerProvider(Provider):
+                     break
+                 logger.info("[mcp] waiting for deps install...")
+                 time.sleep(15)
+-            v = self._vm_exec("python3 -c 'import fastmcp,playwright; print(\"ok\")' 2>&1")
++            v = self._vm_exec(verify_command)
+             logger.info(f"[mcp] deps verify: {(v or {}).get('output','').strip()}")
++            if f"ok {expected_fastmcp}" not in ((v or {}).get("output") or ""):
++                raise RuntimeError("MCP dependency verification failed")
+ 
+         # push mcp_server.tgz + slim client from host /tmp into the VM
+         try:
+@@ -247,6 +346,7 @@ class DockerProvider(Provider):
+                                 f"Chrome:{self.chromium_port} VLC:{self.vlc_port}")
+                     self.container = self.client.containers.run(
+                         image,
++                        name=os.getenv("EVO_CONTAINER_NAME", "evo-osworld"),
+                         environment=self.environment,
+                         network_mode="host",
+                         pid_mode="host",
+@@ -298,6 +398,10 @@ class DockerProvider(Provider):
+ 
+             # Wait for VM to be ready
+             self._wait_for_vm_ready()
++            # QEMU is guaranteed to exist once the control server is reachable.
++            # Record it now, while container inspection is healthy, so teardown
++            # remains precise even if a later Podman inspect call fails.
++            self._remember_owned_qemu()
+ 
+             # Fix the TCG black-screen (llvmpipe crash) if running under host-net/podman
+             if use_hostnet:
+@@ -310,10 +414,14 @@ class DockerProvider(Provider):
+             # Clean up if anything goes wrong
+             if self.container:
+                 try:
++                    self._remember_owned_qemu()
+                     self.container.stop()
+                     self.container.remove()
+                 except:
+                     pass
++                finally:
++                    if os.getenv("OSWORLD_KILL_QEMU", "1") != "0":
++                        self._reap_owned_qemu()
+             raise e
+ 
+     def get_ip_address(self, path_to_vm: str) -> str:
+@@ -331,6 +439,7 @@ class DockerProvider(Provider):
+         if self.container:
+             logger.info("Stopping VM...")
+             try:
++                self._remember_owned_qemu()
+                 self.container.stop()
+                 self.container.remove()
+                 time.sleep(WAIT_TIME)
+@@ -342,13 +451,10 @@ class DockerProvider(Provider):
+                 self.vnc_port = None
+                 self.chromium_port = None
+                 self.vlc_port = None
+-        # Under --pid=host the in-container QEMU is a host process; a forced
+-        # container teardown can orphan it, leaking host ports (5000/7100/...)
+-        # and blocking the next launch. Reap any leftover QEMU. (single-env smoke
+-        # test; disable via OSWORLD_KILL_QEMU=0 for concurrent multi-env runs.)
++        # Under --pid=host, forced container teardown can orphan QEMU. Reap only
++        # the exact PIDs recorded as descendants of this provider's container.
+         if os.getenv("OSWORLD_KILL_QEMU", "1") != "0":
+             try:
+-                subprocess.run(["pkill", "-9", "-x", "qemu"], check=False,
+-                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
++                self._reap_owned_qemu()
+             except Exception as e:
+                 logger.warning(f"qemu reap failed: {e}")
