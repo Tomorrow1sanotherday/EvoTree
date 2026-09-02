@@ -19,7 +19,7 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any, Optional
 
-from .distill_osworld import OSWorldDistiller
+from .distill_osworld import OSWorldDistiller, extract_error_note
 from .integration import EvoTreeRuntime, inject_cheatsheet
 from .memory import EvoTreeMemory
 
@@ -127,19 +127,12 @@ def _is_client_error(raw_action: Mapping[str, Any]) -> bool:
 
 
 def _note_from_step(info: Any, next_observation: Mapping[str, Any]) -> Optional[str]:
-    if isinstance(info, Mapping):
-        for key in ("error", "exception", "message"):
-            value = info.get(key)
-            if isinstance(value, str) and value.strip():
-                return value.strip()
-    # DesktopEnv puts MCP/Python execution output on the next observation. Only
-    # retain messages that look like failures; normal tool results are not notes.
-    value = next_observation.get("exe_result")
-    if isinstance(value, str) and value.strip():
-        lowered = value.lower()
-        if any(marker in lowered for marker in ("error", "exception", "traceback", "failed")):
-            return value.strip()
-    return None
+    """这一步有没有报错。委托给 distill_osworld 的单一判据实现。
+
+    返回非 None 即表示这条边这次执行失败（edge-level failure），同时这段文本
+    会作为坑位笔记进入边的 notes 与 global_notes。
+    """
+    return extract_error_note(info, next_observation)
 
 
 class EvoTreeAgentWrapper:
@@ -246,7 +239,12 @@ class EvoTreeEnvWrapper:
         self._last_observation = None
         self.last_score = None
         self.agent_wrapper._pending.clear()
-        return self.env.reset(*args, **kwargs)
+        observation = self.env.reset(*args, **kwargs)
+        # 首帧也要记住：runner 常写 `obs = env.reset()` 而不再调 _get_obs()，
+        # 那样第一个动作的 before 观测就是 None，整步会被静默丢弃。
+        if isinstance(observation, Mapping):
+            self._last_observation = observation
+        return observation
 
     def _get_obs(self, *args: Any, **kwargs: Any) -> Any:
         observation = self.env._get_obs(*args, **kwargs)
@@ -270,11 +268,15 @@ class EvoTreeEnvWrapper:
         if _is_terminal_action(raw_action) or _is_client_error(raw_action):
             return result
         info = result[3] if len(result) > 3 else {}
+        # 报错即这条边这次失败：edge-level 成败在动作执行完就已知，不必等
+        # 整轮 evaluator 结果（idea §0 写入第 3 步）。
+        note = _note_from_step(info, next_observation)
         self.runtime.after_action(
             dict(self.observation_mapper(before)),
             raw_action,
             next_observation=dict(self.observation_mapper(next_observation)),
-            note=_note_from_step(info, next_observation),
+            note=note,
+            action_success=note is None,
             metadata={"env_info": info},
         )
         return result

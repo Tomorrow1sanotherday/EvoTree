@@ -35,6 +35,42 @@ _CONCLUSION = re.compile(
 _GUI_TOOL_NAME = "computer_use"
 _TERMINAL_ACTIONS = {"terminate", "done", "fail"}
 
+# 判定"这一步动作失败了"的标记。OSWorld 的中间 reward 恒为 0，不能用来定
+# 单步成败；真正的判据是执行结果里有没有报错。
+_ERROR_MARKERS = ("error", "exception", "traceback", "failed")
+
+
+def extract_error_note(
+    info: Any = None, execution_output: Any = None
+) -> Optional[str]:
+    """从一步的执行结果里提取错误信息；没有错误返回 None。
+
+    这是"这一步动作成功了吗"的**唯一判据**，在线 wrapper 与离线 adapter 共用，
+    避免两条路径对同一条轨迹给出不同的成败标签（那会让 online/frozen 两臂不可比）。
+
+    Args:
+        info: env.step 返回的 info 字典（含 error/exception/message）。
+        execution_output: 执行输出文本，或含 ``exe_result`` 的观测字典。
+                          DesktopEnv 把 MCP/Python 的执行输出放在下一个观测里。
+
+    Returns:
+        错误文本（已 strip），无错误时 None。返回值同时用作边的 note 和
+        global_notes 条目，所以保留原文而不是压成布尔。
+    """
+    if isinstance(info, Mapping):
+        for key in ("error", "exception", "message"):
+            value = info.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+
+    if isinstance(execution_output, Mapping):
+        execution_output = execution_output.get("exe_result")
+    if isinstance(execution_output, str) and execution_output.strip():
+        lowered = execution_output.lower()
+        if any(marker in lowered for marker in _ERROR_MARKERS):
+            return execution_output.strip()
+    return None
+
 
 def parse_prediction(prediction: str) -> Optional[dict[str, Any]]:
     """从 agent prediction 解析一条 tool_call 与 conclusion。

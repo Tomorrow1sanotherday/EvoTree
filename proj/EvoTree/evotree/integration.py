@@ -84,9 +84,16 @@ class EvoTreeRuntime:
         *,
         next_observation: Optional[dict[str, Any]] = None,
         note: Optional[str] = None,
+        action_success: Optional[bool] = None,
         metadata: Optional[Mapping[str, Any]] = None,
     ) -> None:
-        """动作执行后暂存一步，不更新森林统计。"""
+        """动作执行后暂存一步，不更新森林统计。
+
+        Args:
+            action_success: 这一步动作本身成没成（边级）。留空时按"有报错笔记
+                即失败"推断，让只传 note 的旧调用方也能得到正确的边级成败。
+                整轮成败另由 ``finish`` 提供，两者互不替代。
+        """
         if self.instruction is None:
             raise RuntimeError("Call begin() before after_action()")
         self._steps.append(
@@ -98,6 +105,7 @@ class EvoTreeRuntime:
                     dict(next_observation) if next_observation is not None else None
                 ),
                 note=note,
+                action_success=(note is None) if action_success is None else action_success,
                 metadata=dict(metadata or {}),
             )
         )
@@ -137,6 +145,7 @@ class EvoTreeRuntime:
                         )
                     ),
                     note=step.note,
+                    action_success=step.action_success,
                     metadata=step.metadata,
                 )
                 for index, step in enumerate(self._steps)

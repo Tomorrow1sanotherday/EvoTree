@@ -9,11 +9,13 @@
         每步动手前调：查森林拼小抄，注入 agent 的 prompt。
 
     write_episode(episode)
-        每轮跑完调：使用 episode-level 最终成败写入整条路径。
+        每轮跑完调：按边级成败写整条路径，按轮级成败记 cost-to-go。
 
-旧版 ``write(instruction, list[Step])`` 仍保留，用于兼容早期调用；新接入
-OSWorld 或在线 runtime 时应使用 ``write_episode``，避免把中间 reward 误当作
-单步成败。
+两个成败不是一回事（详见 ``episode`` 模块）：边的 ``n_success`` 由
+``EpisodeStep.action_success``（这次调用有没有报错）决定，cost-to-go 才由
+``Episode.success``（整轮任务成没成）决定。
+
+旧版 ``write(instruction, list[Step])`` 仍保留，用于兼容早期调用。
 
 真实部署形态 = 永远在线 read+write（Setting I）。评测的冻结（Setting II）
 通过 write_enabled=False 实现：只读旧经验、不写新经验，保证增益只来自迁移。
@@ -109,11 +111,18 @@ class EvoTreeMemory:
     # write_episode：真实 episode 的路径级写入
     # ------------------------------------------------------------------ #
     def write_episode(self, episode: Episode) -> None:
-        """写入一个统一 Episode，使用整轮最终成败更新整条路径。
+        """写入一个统一 Episode。这是 OSWorld 适配器和在线 runtime 的正式入口。
 
-        这是 OSWorld 适配器和在线 runtime 的正式写入入口。整轮成败由
-        ``episode.success`` 决定，并应用到这轮经过的每条动作边；不会把
-        OSWorld 中间的 reward=0 当作单步失败。
+        严格区分两个成败（idea §0 写入的第 3 步与第 4 步）：
+
+        - **边级**（``step.action_success``）决定 ``n_success`` 与落点指针。
+          一次工具报错就是这条边的一次失败，即使整轮任务最终成功。
+        - **轮级**（``episode.success``）只决定要不要记 cost-to-go，
+          且只把**真正走通的那些步**计入剩余步数。
+
+        这样 idea §8 的贯穿示例才成立：整轮成功但中途越界两次的
+        ``duplicate_slide`` 边记 ``n=3、p=0.33``，失败落点 ``s_err``
+        拿到自己的出边统计，而不是被记成一条 100% 可靠的边。
         """
         if not self.write_enabled or episode.is_empty:
             return
@@ -133,11 +142,13 @@ class EvoTreeMemory:
             edge = tree.upsert_step(
                 from_sig=from_sig,
                 action=action,
-                success=episode.success,
+                success=step.action_success,
                 to_sig=to_sig,
                 note=step.note,
             )
-            if episode.success:
+            # cost-to-go 只统计"走通了的"步：失败的绕行步不该被算进
+            # "还差几步到终点"，否则效率项会把踩坑的代价算成路径长度。
+            if episode.success and step.action_success:
                 success_path.append(edge)
             if step.note and action.kind == ActionKind.TOOL:
                 self.notes.add_note(action.name, step.note)

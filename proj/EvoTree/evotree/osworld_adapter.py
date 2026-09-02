@@ -16,10 +16,11 @@ OSWorld 原始记录中：
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping, Optional
 
-from .distill_osworld import OSWorldDistiller
+from .distill_osworld import OSWorldDistiller, extract_error_note
 from .episode import Episode, EpisodeStep
 
 ObservationFactory = Callable[[Mapping[str, Any], int], Mapping[str, Any]]
@@ -196,12 +197,14 @@ class OSWorldEpisodeAdapter:
                 observation = dict(observation_factory(record, index))
             else:
                 observation = self._fallback_observation(record, index)
+            note = self._extract_note(record)
             steps.append(
                 EpisodeStep(
                     step_index=int(record.get("step_num", index)),
                     observation=observation,
                     raw_action=self._raw_action(record),
-                    note=self._extract_note(record),
+                    note=note,
+                    action_success=note is None,
                     reward=float(record.get("reward", 0.0) or 0.0),
                     done=bool(record.get("done", False)),
                     screenshot_file=record.get("screenshot_file"),
@@ -216,16 +219,8 @@ class OSWorldEpisodeAdapter:
         # 下一条动作的动作前观测就是当前动作的默认落点观测。
         # 最后一步若没有可用的后继观测，保持 None。
         for index in range(len(steps) - 1):
-            steps[index] = EpisodeStep(
-                step_index=steps[index].step_index,
-                observation=steps[index].observation,
-                raw_action=steps[index].raw_action,
-                next_observation=steps[index + 1].observation,
-                note=steps[index].note,
-                reward=steps[index].reward,
-                done=steps[index].done,
-                screenshot_file=steps[index].screenshot_file,
-                metadata=steps[index].metadata,
+            steps[index] = replace(
+                steps[index], next_observation=steps[index + 1].observation
             )
         return steps
 
@@ -246,17 +241,17 @@ class OSWorldEpisodeAdapter:
 
     @staticmethod
     def _extract_note(record: Mapping[str, Any]) -> Optional[str]:
-        """提取明确的执行/客户端错误，不把 reward=0 当成错误。"""
-        prediction = record.get("prediction")
-        if isinstance(prediction, str) and prediction.strip().lower() == "client error":
-            return "client error"
-        info = record.get("info")
-        if isinstance(info, dict):
-            for key in ("error", "exception", "message"):
-                value = info.get(key)
-                if isinstance(value, str) and value.strip():
-                    return value.strip()
-        return None
+        """提取明确的执行错误，不把 reward=0 当成错误。
+
+        与在线 wrapper 共用 ``extract_error_note``，保证同一条轨迹无论走离线
+        重放还是在线 hook，都得到同一个边级成败标签。
+
+        （client error 记录在 ``_build_steps`` 里已被整条剔除——那是模型调用
+        失败，不是 agent 在环境里执行的动作，不该进经验路径。）
+        """
+        return extract_error_note(
+            record.get("info"), record.get("exe_result")
+        )
 
     @staticmethod
     def _fallback_observation(record: dict[str, Any], index: int) -> dict[str, Any]:

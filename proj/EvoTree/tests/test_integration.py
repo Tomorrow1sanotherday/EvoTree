@@ -68,7 +68,8 @@ class TestRuntimeLifecycle:
         sheet = memory.read_cheatsheet("rename directory", observation())
         assert sheet.recommendations[0].action.name == "os.rename_directory"
 
-    def test_failed_episode_is_committed_as_failed_path(self):
+    def test_failed_episode_is_committed_without_cost_to_go(self):
+        """整轮失败但动作没报错：边记 n+1 且算成功，只是没有 cost-to-go。"""
         memory = EvoTreeMemory()
         runtime = EvoTreeRuntime(memory)
         runtime.begin("rename directory")
@@ -78,7 +79,46 @@ class TestRuntimeLifecycle:
         tree = next(iter(memory.forest._trees.values()))
         edge = tree.out_edges("s0")[0]
         assert edge.n == 1
+        assert edge.n_success == 1
+        assert edge.steps_after_success == []
+
+    def test_note_marks_edge_level_failure(self):
+        """在线 hook 只传 note 时，按"有报错即失败"推断边级成败。"""
+        memory = EvoTreeMemory()
+        runtime = EvoTreeRuntime(memory)
+        runtime.begin("rename directory")
+        runtime.after_action(
+            observation(),
+            action(),
+            next_observation=observation("Error"),
+            note="OSError: target exists",
+        )
+        runtime.finish(success=True)
+
+        tree = next(iter(memory.forest._trees.values()))
+        edge = tree.out_edges("s0")[0]
+        assert edge.n == 1
         assert edge.n_success == 0
+        assert edge.to_fail is not None
+
+    def test_explicit_action_success_overrides_note_inference(self):
+        """显式传 action_success 时以它为准（note 可能只是警告不是失败）。"""
+        memory = EvoTreeMemory()
+        runtime = EvoTreeRuntime(memory)
+        runtime.begin("rename directory")
+        runtime.after_action(
+            observation(),
+            action(),
+            next_observation=observation("Files *"),
+            note="deprecation warning",
+            action_success=True,
+        )
+        runtime.finish(success=True)
+
+        tree = next(iter(memory.forest._trees.values()))
+        edge = tree.out_edges("s0")[0]
+        assert edge.n_success == 1
+        assert edge.to_success is not None
 
     def test_score_and_success_conflict_is_rejected(self):
         runtime = EvoTreeRuntime(EvoTreeMemory())

@@ -130,6 +130,55 @@ def test_real_loop_hook_injects_prompt_records_action_and_finishes(tmp_path: Pat
     assert tree_files[0].read_text(encoding="utf-8")
 
 
+def test_first_action_is_recorded_without_explicit_get_obs():
+    """runner 走 `obs = env.reset()` 拿首帧时，第一个动作也必须入账。
+
+    回归测试：此前 reset() 把 _last_observation 清成 None 且不回填，只有显式
+    调 _get_obs() 才有 before 观测；走 reset 返回值的 runner 会让第一步被
+    静默丢弃——整棵树为空却不报错。
+    """
+    memory = EvoTreeMemory(distiller=OSWorldDistiller())
+    raw_agent, raw_env, runtime = wrap_osworld(
+        FakeAgent(), FakeEnv(), memory, use_evotree=True
+    )
+
+    observation = raw_env.reset(task_config={"id": "smoke"})
+    _response, actions = raw_agent.predict("rename directory", observation)
+    raw_env.step(actions[0], 0)
+    raw_env.evaluate()
+
+    tree = memory.forest.get_tree("rename_directory")
+    assert tree is not None, "first action was silently dropped"
+    assert [edge.n for edge in tree.all_edges()] == [1]
+
+
+def test_execution_error_marks_edge_failure():
+    """exe_result 里的报错 → 这条边记失败，落点挂 to_fail。"""
+
+    class FailingEnv(FakeEnv):
+        def step(self, action, pause=0):
+            self.steps.append(action)
+            self.observation = dict(_obs("Files"))
+            self.observation["exe_result"] = "Traceback: OSError target exists"
+            return self.observation, 0, False, {}
+
+    memory = EvoTreeMemory(distiller=OSWorldDistiller())
+    raw_agent, raw_env, _runtime = wrap_osworld(
+        FakeAgent(), FailingEnv(), memory, use_evotree=True
+    )
+    observation = raw_env.reset()
+    _response, actions = raw_agent.predict("rename directory", observation)
+    raw_env.step(actions[0], 0)
+    raw_env.evaluate()
+
+    tree = memory.forest.get_tree("rename_directory")
+    edge = tree.out_edges("s0")[0]
+    assert edge.n == 1 and edge.n_success == 0
+    assert edge.to_fail is not None
+    # 工具报错抄进全局手册（idea §0 写入第 3 步）。
+    assert memory.notes.query("os.rename_directory")
+
+
 def test_baseline_switch_returns_original_objects():
     agent, env = FakeAgent(), FakeEnv()
     wrapped_agent, wrapped_env, runtime = wrap_osworld(
