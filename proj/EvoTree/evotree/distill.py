@@ -6,20 +6,23 @@
     distill_state(observation)  -> StateSig    φ：我在哪一步
     distill_action(raw_action)  -> ActionTmpl  α：做了个什么操作
 
-设计立场（重要）：本模块把"如何清洗"抽象成三个**清洗器接口**，默认给一份
-**规则占位实现**（RuleBasedDistiller），让整条链路先端到端跑通。真实的
-embedding 模板匹配 / VLM 事实抽取 / 精细动作归一是后续升级（见各方法的
-「TODO(B阶段)」标注），届时只需替换实现、不动接口。
+设计立场（重要）：本模块把"如何清洗"抽象成三个**清洗器接口**，实现可替换。
+
+当前状态：
+    τ  已实现 —— 骨架抽取 + 模板库匹配 + 槽位可填性（见 template_lib）。
+    φ  主键已实现（确定性提取 + window 归一化）；facts 仍留空待 VLM 填。
+    α  工具侧已实现（工具名 + 参数槽精确匹配）；GUI 侧仍用动作类型代替
+       语义描述（见 distill_osworld 的说明），是已知的粒度过粗问题。
 
 原则（idea §4.1）：能确定性提取的绝不用 LLM。
 """
 
 from __future__ import annotations
 
-import re
-from typing import Any, Protocol
+from typing import Any, Optional, Protocol
 
 from .normalize import normalize_window
+from .template_lib import TemplateLibrary
 from .types import ActionKind, ActionTmpl, StateSig, Template
 
 
@@ -37,24 +40,9 @@ class Distiller(Protocol):
 # --------------------------------------------------------------------------- #
 # τ —— 任务模板：把指令里会变的部分挖成槽位
 # --------------------------------------------------------------------------- #
-# 占位策略：把引号内容、文件名、数字等"易变量"替换成槽位占位符，
-# 相同骨架的指令归为同一模板。真实版应改用指令 embedding 聚类 + 槽位抽取。
-_QUOTED = re.compile(r'"[^"]*"|\'[^\']*\'')          # 引号包裹的内容
-_FILENAME = re.compile(r'\b[\w-]+\.\w+\b')            # 形如 a.pptx 的文件名
-_NUMBER = re.compile(r'\b\d+\b')                      # 独立数字
-
-
-def _slugify(text: str, max_len: int = 40) -> str:
-    """把骨架文本压成一个稳定、文件系统安全的 template_id。
-
-    槽位占位符 <argN> 里的尖括号是文件系统非法字符（Windows），
-    统一转成安全的 _argN_，其余非单词字符去掉。
-    """
-    slug = text.strip()
-    slug = re.sub(r"<(\w+)>", r"_\1_", slug)   # <arg0> -> _arg0_
-    slug = re.sub(r"\s+", "_", slug)
-    slug = re.sub(r"[^\w-]", "", slug)          # 去掉剩余非法字符
-    return slug[:max_len] or "empty"
+# 实现搬到 template_lib.TemplateLibrary：骨架抽取 + 模板库匹配 + 槽位可填性，
+# 对应 idea §4.1「指令与模板库匹配 + 槽位抽取（槽能填满 = 对上），对不上新建」。
+# 这里不再自己做正则替换，避免与模板库两套规则漂移。
 
 
 # --------------------------------------------------------------------------- #
@@ -77,35 +65,25 @@ def _slugify(text: str, max_len: int = 40) -> str:
 
 
 class RuleBasedDistiller:
-    """规则占位版三道清洗。让闭环先跑通；真实实现按接口替换。"""
+    """规则版三道清洗。
+
+    τ 已接入模板库（见 template_lib）；φ 的 facts 与 α 的 GUI 语义描述仍是
+    占位实现，按 Distiller 接口可替换。
+    """
+
+    def __init__(self, template_library: Optional[TemplateLibrary] = None) -> None:
+        """
+        Args:
+            template_library: 任务模板库。默认每个 distiller 自带一个——它随
+                写入增长，与记忆同生命周期。多个 memory 需要共享分册口径时
+                （如实验的多个 arm）显式传同一个实例。
+        """
+        self.template_library = template_library or TemplateLibrary()
 
     # ---- τ ---- #
     def distill_task(self, instruction: str) -> Template:
-        """指令 → 任务模板。把引号内容/文件名/数字替换成槽位占位符。
-
-        TODO(B阶段): 改用指令 embedding + 与模板库匹配 + 槽位抽取；
-        对不上再新建模板。当前是纯规则占位。
-        """
-        skeleton = instruction.strip()
-        slots: list[str] = []
-
-        # 依次把易变量替换成 <arg0>, <arg1> ... 并记录槽位
-        def _sub(pattern: re.Pattern, text: str) -> str:
-            def repl(_m: re.Match) -> str:
-                name = f"arg{len(slots)}"
-                slots.append(name)
-                return f"<{name}>"
-            return pattern.sub(repl, text)
-
-        skeleton = _sub(_QUOTED, skeleton)
-        skeleton = _sub(_FILENAME, skeleton)
-        skeleton = _sub(_NUMBER, skeleton)
-
-        return Template(
-            template_id=_slugify(skeleton),
-            skeleton=skeleton,
-            slots=tuple(slots),
-        )
+        """指令 → 任务模板（模板库匹配 + 槽位抽取，见 template_lib）。"""
+        return self.template_library.match(instruction)
 
     # ---- φ ---- #
     def distill_state(self, observation: dict[str, Any]) -> StateSig:

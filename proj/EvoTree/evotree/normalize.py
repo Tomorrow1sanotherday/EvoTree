@@ -14,17 +14,28 @@ window="data2.xlsx"，主键不同 → 找不到状态 → 推荐栏空返回（
         - 应用名 Calc / Impress     → 不同应用是不同局面
         - 其它非文件名的稳定词       → 保留
 
-设计对齐：文件名的归一化规则与 τ 模板的槽位抽取（distill._FILENAME）一致 ——
-τ 把指令里的文件名挖成槽位，φ 把 window 里的文件名归一化成 <file>，二者对齐，
-保证"同一类任务、同一步局面"在 τ 和 φ 两个维度都能归堆。
+设计对齐：文件名的归一化规则与 τ 模板的槽位抽取（template_lib._FILENAME）
+一致 —— τ 把指令里的文件名挖成槽位，φ 把 window 里的文件名归一化成 <file>，
+二者对齐，保证"同一类任务、同一步局面"在 τ 和 φ 两个维度都能归堆。
 """
 
 from __future__ import annotations
 
 import re
 
-# 文件名：形如 a.pptx / report_2024.xlsx / data-final.csv（与 distill._FILENAME 对齐）
-_FILENAME = re.compile(r"\b[\w-]+\.\w+\b")
+# 文件名：形如 a.pptx / report_2024.xlsx / data-final.csv。
+#
+# 扩展名要求以字母开头且不超过 10 字符，否则会误伤：
+#   python3.11 — Terminal   （版本号被当文件名 → "<file> — Terminal"）
+#   github.com/foo — Firefox（域名被当文件名）
+#   v1.2 release notes      （版本号）
+# 这些误伤会让不同应用的窗口错误归堆，比漏归一化更有害。
+_FILENAME = re.compile(r"\b[\w-]+\.[A-Za-z][A-Za-z0-9]{0,9}\b")
+
+# 常见顶级域名：出现在点号后面时说明这是域名不是文件名。
+_DOMAIN_SUFFIXES = frozenset(
+    {"com", "org", "net", "io", "cn", "edu", "gov", "co", "dev", "app"}
+)
 
 # 未保存修改标记：常见于标题开头或文件名后（LibreOffice/多数编辑器用 *）
 _MODIFIED_MARKS = ("*", "●", "•")
@@ -54,8 +65,8 @@ def normalize_window(window: str) -> str:
     # 1) 记录是否有未保存标记（在抹文件名前先探测，避免被误伤）
     has_modified = _detect_modified(window)
 
-    # 2) 把所有文件名替换成占位符
-    normalized = _FILENAME.sub(_FILE_PLACEHOLDER, window)
+    # 2) 把所有文件名替换成占位符（域名除外）
+    normalized = _FILENAME.sub(_replace_filename, window)
 
     # 3) 折叠多余空白
     normalized = re.sub(r"\s+", " ", normalized).strip()
@@ -65,6 +76,19 @@ def normalize_window(window: str) -> str:
         normalized = f"{normalized} *"
 
     return normalized
+
+
+def _replace_filename(match: re.Match) -> str:
+    """把一个文件名匹配替换成占位符；域名保持原样。
+
+    ``github.com`` 形如文件名但不是——归一化掉它会让不同网站的浏览器窗口
+    错误归堆成同一个状态。
+    """
+    text = match.group(0)
+    suffix = text.rsplit(".", 1)[-1].lower()
+    if suffix in _DOMAIN_SUFFIXES:
+        return text
+    return _FILE_PLACEHOLDER
 
 
 def _detect_modified(window: str) -> bool:

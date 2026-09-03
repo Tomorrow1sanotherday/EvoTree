@@ -33,6 +33,7 @@ from .forest import ExperienceForest
 from .notes import GlobalNotes
 from .retrieval import Cheatsheet, Retriever, render_cheatsheet
 from .scoring import DEFAULT_GAMMA, DEFAULT_UCB_C
+from .template_lib import TemplateLibrary
 from .types import ActionKind, ActionTmpl, StateSig
 
 
@@ -71,7 +72,11 @@ class EvoTreeMemory:
             write_enabled: 是否允许写入（Setting II 冻结评测时设 False）。
         """
         self.root_dir = Path(root_dir) if root_dir else None
-        self.distiller: Distiller = distiller or RuleBasedDistiller()
+        # 模板库随记忆一起持久化：树按 template_id 落盘，库若不同步恢复，
+        # 同一条指令重启后会登记成新 id，历史经验失联。
+        self.distiller: Distiller = distiller or RuleBasedDistiller(
+            template_library=self._load_template_library()
+        )
         self.forest = ExperienceForest(root_dir=self.root_dir)
         self.notes = self._load_notes()
         self.retriever = Retriever(gamma=gamma, ucb_c=ucb_c, top_k=top_k)
@@ -219,16 +224,27 @@ class EvoTreeMemory:
     # 持久化
     # ------------------------------------------------------------------ #
     def save(self) -> None:
-        """把森林和坑位手册落盘。纯内存模式（root_dir=None）时无操作。"""
+        """把森林、坑位手册和模板库落盘。纯内存模式（root_dir=None）时无操作。"""
         if self.root_dir is None or not self.write_enabled:
             return
         self.forest.save_all()
         self.notes.save(self._notes_path())
+        library = getattr(self.distiller, "template_library", None)
+        if isinstance(library, TemplateLibrary):
+            library.save(self._templates_path())
 
     def _load_notes(self) -> GlobalNotes:
         if self.root_dir is None:
             return GlobalNotes()
         return GlobalNotes.load(self._notes_path())
 
+    def _load_template_library(self) -> Optional[TemplateLibrary]:
+        if self.root_dir is None:
+            return None
+        return TemplateLibrary.load(self._templates_path())
+
     def _notes_path(self) -> Path:
         return self.root_dir / "global_notes.json"
+
+    def _templates_path(self) -> Path:
+        return self.root_dir / "memory" / "templates.json"

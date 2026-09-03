@@ -135,8 +135,7 @@ class TestRuntimeLifecycle:
         episode = runtime.finish(success=True)
 
         assert episode.num_steps == 0
-        assert memory.forest.get_tree("task_a") is None
-        assert memory.forest.get_tree("task_b") is None
+        assert len(memory.forest._trees) == 0
 
     def test_freeze_does_not_commit_episode(self):
         memory = EvoTreeMemory(write_enabled=False)
@@ -144,7 +143,9 @@ class TestRuntimeLifecycle:
         runtime.begin("rename directory")
         runtime.after_action(observation(), action())
         runtime.finish(success=True)
-        assert memory.forest.get_tree("rename_directory") is None
+        assert memory.forest.get_tree(
+            memory.distiller.distill_task("rename directory").template_id
+        ) is None
 
 
 class TestAdapterToMemoryBoundary:

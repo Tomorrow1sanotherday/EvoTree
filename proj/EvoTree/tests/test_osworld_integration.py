@@ -147,7 +147,7 @@ def test_first_action_is_recorded_without_explicit_get_obs():
     raw_env.step(actions[0], 0)
     raw_env.evaluate()
 
-    tree = memory.forest.get_tree("rename_directory")
+    tree = memory.forest.get_tree(memory.distiller.distill_task("rename directory").template_id)
     assert tree is not None, "first action was silently dropped"
     assert [edge.n for edge in tree.all_edges()] == [1]
 
@@ -171,7 +171,7 @@ def test_execution_error_marks_edge_failure():
     raw_env.step(actions[0], 0)
     raw_env.evaluate()
 
-    tree = memory.forest.get_tree("rename_directory")
+    tree = memory.forest.get_tree(memory.distiller.distill_task("rename directory").template_id)
     edge = tree.out_edges("s0")[0]
     assert edge.n == 1 and edge.n_success == 0
     assert edge.to_fail is not None
@@ -206,7 +206,7 @@ def test_terminal_action_is_not_recorded():
     raw_env.step(actions[0], 0)
     raw_env.evaluate()
     assert runtime is not None and runtime.active is False
-    assert memory.forest.get_tree("rename_directory") is None
+    assert memory.forest.get_tree(memory.distiller.distill_task("rename directory").template_id) is None
 
 
 def test_frozen_wrapper_does_not_create_files(tmp_path: Path):

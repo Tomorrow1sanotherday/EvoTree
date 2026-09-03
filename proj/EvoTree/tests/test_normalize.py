@@ -40,6 +40,29 @@ class TestNormalizeWindow:
         assert "a.txt" not in result and "b.txt" not in result
 
 
+class TestFilenameOverreach:
+    """回归：形如文件名但不是文件名的东西不该被归一化掉。
+
+    误伤比漏归一化更有害——它会把不同应用/网站的窗口错误归堆成同一个状态，
+    直接制造签名混叠（地基①）。
+    """
+
+    def test_version_number_is_not_a_filename(self):
+        assert normalize_window("python3.11 — Terminal") == "python3.11 — Terminal"
+
+    def test_domain_is_not_a_filename(self):
+        result = normalize_window("github.com/foo — Firefox")
+        assert "github.com" in result
+
+    def test_different_sites_stay_distinct(self):
+        assert normalize_window("github.com — Firefox") != normalize_window(
+            "example.org — Firefox"
+        )
+
+    def test_real_filenames_still_normalized(self):
+        assert normalize_window("notes.md — Editor") == "<file> — Editor"
+
+
 class TestIntegrationWithDistill:
     """归一化接进 distill 后，同类任务的状态主键真的对上了。"""
 

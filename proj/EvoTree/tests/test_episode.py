@@ -14,6 +14,15 @@ def action(name):
     return {"kind": "tool", "name": name, "args": {"value": "variable"}}
 
 
+def tree_for(memory, instruction):
+    """按指令取树。
+
+    通过 memory 自己的 distiller 解析 template_id，而不是硬编码字符串——
+    id 的构造方式（现在是 可读前缀+骨架哈希）属于实现细节，测试不该锁死它。
+    """
+    return memory.forest.get_tree(memory.distiller.distill_task(instruction).template_id)
+
+
 def episode(success):
     return Episode(
         instruction="rename a directory",
@@ -68,7 +77,7 @@ class TestWriteEpisode:
     def test_successful_episode_records_success_and_cost_to_go(self):
         memory = EvoTreeMemory()
         memory.write_episode(episode(success=True))
-        tree = memory.forest.get_tree("rename_a_directory")
+        tree = tree_for(memory, "rename a directory")
         edges = list(tree.all_edges())
         assert len(edges) == 2
         assert [edge.n_success for edge in edges] == [1, 1]
@@ -83,7 +92,7 @@ class TestWriteEpisode:
         """
         memory = EvoTreeMemory()
         memory.write_episode(episode(success=False))
-        tree = memory.forest.get_tree("rename_a_directory")
+        tree = tree_for(memory, "rename a directory")
         edges = list(tree.all_edges())
         assert len(edges) == 2
         assert all(edge.n == 1 for edge in edges)
@@ -119,7 +128,7 @@ class TestWriteEpisode:
                 success=True,
             )
         )
-        tree = memory.forest.get_tree("rename_a_directory")
+        tree = tree_for(memory, "rename a directory")
         failed = tree.out_edges("s0")[0]
         assert failed.n == 1 and failed.n_success == 0
         assert failed.to_fail is not None
@@ -160,7 +169,7 @@ class TestWriteEpisode:
                 success=True,
             )
         )
-        tree = memory.forest.get_tree("duplicate_the_last_slide")
+        tree = tree_for(memory, "duplicate the last slide")
         edge = tree.out_edges("s0")[0]
         assert edge.n == 3
         assert edge.n_success == 1
@@ -171,18 +180,18 @@ class TestWriteEpisode:
     def test_zero_intermediate_rewards_do_not_change_episode_result(self):
         memory = EvoTreeMemory()
         memory.write_episode(episode(success=True))
-        tree = memory.forest.get_tree("rename_a_directory")
+        tree = tree_for(memory, "rename a directory")
         assert all(edge.n_success == 1 for edge in tree.all_edges())
 
     def test_write_episode_respects_freeze(self):
         memory = EvoTreeMemory(write_enabled=False)
         memory.write_episode(episode(success=True))
-        assert memory.forest.get_tree("rename_a_directory") is None
+        assert tree_for(memory, "rename a directory") is None
 
     def test_next_observation_creates_success_pointer(self):
         memory = EvoTreeMemory()
         memory.write_episode(episode(success=True))
-        tree = memory.forest.get_tree("rename_a_directory")
+        tree = tree_for(memory, "rename a directory")
         first = tree.out_edges("s0")[0]
         assert first.to_success is not None
         assert tree.node_by_id(first.to_success).sig.window == "Files *"
