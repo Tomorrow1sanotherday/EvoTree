@@ -2,8 +2,8 @@
 set -euo pipefail
 umask 077
 
-BASE=/data/songweishuai/evotree_m2_baseline20_v3_20260903
-OUT=/data/songweishuai/evotree_m2_20tasks_v3_20260903
+BASE=/data/songweishuai/projs/rh/EvoTree/runs/evotree_m2_baseline20_v3_20260903
+OUT=/data/songweishuai/projs/rh/EvoTree/runs/evotree_m2_20tasks_v3_20260903
 REPO=/data/songweishuai/projs/rh/EvoTree/proj/EvoTree
 RUNNER=/data/songweishuai/projs/rh/OSWorld-mcp-run
 TASK="$REPO/experiments/m2_small_eval/tasks_20.json"

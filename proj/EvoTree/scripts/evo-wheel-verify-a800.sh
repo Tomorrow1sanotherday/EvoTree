@@ -10,6 +10,6 @@ trap 'rm -rf -- "$VERIFY_DIR"' EXIT
 
 python3 -m venv "$VERIFY_DIR"
 "$VERIFY_DIR/bin/pip" install --no-index \
-  --find-links /data/songweishuai/evotree_mcp_wheelhouse_py310_20260902 \
+  --find-links /data/songweishuai/projs/rh/EvoTree/runs/evotree_mcp_wheelhouse_py310_20260902 \
   fastmcp==2.13.3 playwright
 "$VERIFY_DIR/bin/python" -c 'import importlib.metadata; import playwright; from fastmcp.tools.tool import Tool; assert importlib.metadata.version("fastmcp") == "2.13.3"; print("OFFLINE_VERIFY_OK")'

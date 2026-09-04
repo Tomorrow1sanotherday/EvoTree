@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-WHEELHOUSE=/data/songweishuai/evotree_mcp_wheelhouse_py310_20260902
-LOG=/data/songweishuai/evotree-wheel-download.log
-RC=/data/songweishuai/evotree-wheel-download.rc
+WHEELHOUSE=/data/songweishuai/projs/rh/EvoTree/runs/evotree_mcp_wheelhouse_py310_20260902
+LOG=/data/songweishuai/projs/rh/EvoTree/logs/evotree-wheel-download.log
+RC=/data/songweishuai/projs/rh/EvoTree/logs/evotree-wheel-download.rc
 
 mkdir -p "$WHEELHOUSE"
 PYTHONUNBUFFERED=1 python3 -m pip download \

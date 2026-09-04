@@ -2,7 +2,7 @@
 set -u
 umask 077
 
-OUT=/data/songweishuai/evotree_ownership_smoke_v3_20260903
+OUT=/data/songweishuai/projs/rh/EvoTree/runs/evotree_ownership_smoke_v3_20260903
 RUNNER=/data/songweishuai/projs/rh/OSWorld-mcp-run
 TASK=/data/songweishuai/projs/rh/EvoTree/proj/EvoTree/experiments/m2_small_eval/tasks_smoke.json
 PYTHON=/data/songweishuai/envs/evo-osworld-20260829/bin/python
