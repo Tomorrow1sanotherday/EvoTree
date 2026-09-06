@@ -7,7 +7,11 @@
 import json
 from pathlib import Path
 
-from evotree.distill_osworld import OSWorldDistiller, parse_prediction
+from evotree.distill_osworld import (
+    OSWorldDistiller,
+    extract_error_note,
+    parse_prediction,
+)
 from evotree.types import ActionKind
 
 FIXTURE = Path(__file__).parent / "fixtures" / "rename_dir_gui_6steps.jsonl"
@@ -158,3 +162,38 @@ class TestTaskStateReused:
         t = D.distill_task(instr)
         assert t.template_id  # 非空
         assert len(t.slots) >= 1  # "todo_list_Jan_1"/"..._2" 被挖成槽位
+
+
+class TestErrorDetection:
+    """extract_error_note 的回归锁。
+
+    2026-09-06 实测：用子串匹配 "error" 会把 MCP 成功返回里的 ``is_error=False``
+    判成失败，导致工具边平均 p 被压到 0.250（而真实报错为 0 次），推荐栏只剩
+    GUI 动作，11 条 global_notes 全是成功返回值。
+    """
+
+    def test_mcp_success_is_not_an_error(self):
+        ok = "CallToolResult(content=[TextContent(text='1.0')], is_error=False)"
+        assert extract_error_note(None, {"exe_result": ok}) is None
+
+    def test_mcp_failure_is_an_error(self):
+        bad = "CallToolResult(content=[], is_error=True)"
+        assert extract_error_note(None, {"exe_result": bad}) is not None
+
+    def test_json_style_is_error_field(self):
+        assert extract_error_note(None, {"exe_result": '{"isError": false}'}) is None
+        assert extract_error_note(None, {"exe_result": '{"isError": true}'}) is not None
+
+    def test_traceback_still_detected(self):
+        tb = "Traceback (most recent call last): OSError"
+        assert extract_error_note(None, {"exe_result": tb}) is not None
+
+    def test_errno_still_detected(self):
+        assert extract_error_note(None, {"exe_result": "OSError: [Errno 2] nope"}) is not None
+
+    def test_plain_result_is_not_an_error(self):
+        assert extract_error_note(None, {"exe_result": "{'result': 1.0}"}) is None
+
+    def test_note_is_truncated(self):
+        note = extract_error_note(None, {"exe_result": "x" * 400 + " Traceback"})
+        assert note is not None and len(note) <= 201

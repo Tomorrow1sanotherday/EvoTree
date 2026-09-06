@@ -35,9 +35,24 @@ _CONCLUSION = re.compile(
 _GUI_TOOL_NAME = "computer_use"
 _TERMINAL_ACTIONS = {"terminate", "done", "fail"}
 
-# 判定"这一步动作失败了"的标记。OSWorld 的中间 reward 恒为 0，不能用来定
-# 单步成败；真正的判据是执行结果里有没有报错。
-_ERROR_MARKERS = ("error", "exception", "traceback", "failed")
+# 无歧义的报错标记。**不含裸的 "error"** —— MCP 成功返回里就带
+# ``is_error=False``，用子串匹配 "error" 会把每次成功调用都判成失败。
+# 2026-09-06 实测：工具边平均 p 被压到 0.250，而真实报错为 0 次。
+_ERROR_MARKERS = ("traceback", "exception:", "errno")
+
+# MCP 的 CallToolResult 自带成败字段，优先按它判定。不同版本有 repr 形式
+# （is_error=False）和 JSON 形式（"isError": false）两种写法。
+_MCP_ERROR_TRUE = re.compile(r"is[_\s]*error\W{0,3}true", re.IGNORECASE)
+_MCP_ERROR_FALSE = re.compile(r"is[_\s]*error\W{0,3}false", re.IGNORECASE)
+
+# 输出原文可能是几百字符的 CallToolResult repr，整段进 prompt 会挤占上下文
+# （实测 global_notes 单条 300+ 字符），入库前截断。
+_NOTE_MAX_LEN = 200
+
+
+def _truncate(text: str) -> str:
+    text = text.strip()
+    return text if len(text) <= _NOTE_MAX_LEN else text[:_NOTE_MAX_LEN] + "…"
 
 
 def extract_error_note(
@@ -45,8 +60,20 @@ def extract_error_note(
 ) -> Optional[str]:
     """从一步的执行结果里提取错误信息；没有错误返回 None。
 
-    这是"这一步动作成功了吗"的**唯一判据**，在线 wrapper 与离线 adapter 共用，
-    避免两条路径对同一条轨迹给出不同的成败标签（那会让 online/frozen 两臂不可比）。
+    这个判据只回答"**这次工具调用有没有报错**"，用来往边的 notes 和
+    global_notes 写坑位笔记（idea §0 写入第 3 步的后半句）。
+
+    它**不决定边的 n_success** —— 边的成功率按整轮任务成败记（见
+    ``memory.write_episode``）。两者是不同的量：工具 API 返回成功，任务仍
+    可能失败。2026-09-06 实测：20 任务里 12 个失败任务的真实工具报错为
+    **0 次**，若拿它当成功率，``p`` 会退化成常量、失去区分度。
+
+    判定顺序（从可靠到兜底）：
+
+    1. ``info`` 里的显式 error/exception 字段；
+    2. MCP ``CallToolResult`` 的 ``is_error`` —— **先查 True，再查 False 并
+       直接放行**，避免 ``is_error=False`` 被第 3 步的子串匹配命中；
+    3. 无歧义的报错标记（Traceback / Exception: / Errno）。
 
     Args:
         info: env.step 返回的 info 字典（含 error/exception/message）。
@@ -54,21 +81,28 @@ def extract_error_note(
                           DesktopEnv 把 MCP/Python 的执行输出放在下一个观测里。
 
     Returns:
-        错误文本（已 strip），无错误时 None。返回值同时用作边的 note 和
-        global_notes 条目，所以保留原文而不是压成布尔。
+        错误文本（已 strip、截断到 200 字），无错误时 None。
     """
     if isinstance(info, Mapping):
         for key in ("error", "exception", "message"):
             value = info.get(key)
             if isinstance(value, str) and value.strip():
-                return value.strip()
+                return _truncate(value)
 
     if isinstance(execution_output, Mapping):
         execution_output = execution_output.get("exe_result")
-    if isinstance(execution_output, str) and execution_output.strip():
-        lowered = execution_output.lower()
-        if any(marker in lowered for marker in _ERROR_MARKERS):
-            return execution_output.strip()
+    if not isinstance(execution_output, str) or not execution_output.strip():
+        return None
+
+    # MCP 自带成败字段优先：明确 True 即失败，明确 False 即成功。
+    if _MCP_ERROR_TRUE.search(execution_output):
+        return _truncate(execution_output)
+    if _MCP_ERROR_FALSE.search(execution_output):
+        return None
+
+    lowered = execution_output.lower()
+    if any(marker in lowered for marker in _ERROR_MARKERS):
+        return _truncate(execution_output)
     return None
 
 

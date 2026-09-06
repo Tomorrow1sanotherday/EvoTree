@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any, Optional
 
@@ -27,12 +28,35 @@ from .memory import EvoTreeMemory
 ObservationMapper = Callable[[Mapping[str, Any]], Mapping[str, Any]]
 
 
+# OSWorld 的 get_current_apps() 解析 ``wmctrl -xl`` 时取错了字段：输出格式是
+# ``id 桌面 WM_CLASS 主机名 标题``，它用 ``parts[3]``（主机名）当 title，真正的
+# 标题在 ``parts[4]``。所以所有窗口 title 都等于主机名（实测全是
+# "user-virtual-machine"）。这里做兜底修正。
+_HOSTNAME_LIKE = re.compile(r"^[\w-]+-virtual-machine$|^localhost$", re.IGNORECASE)
+
+
+def _clean_window_title(title: Any) -> str:
+    """丢掉形如主机名的伪标题。
+
+    宁可返回空串走冷启动，也不要把主机名当窗口标题 —— 那会让不同应用的不同
+    步骤全部塌缩成同一个状态签名（2026-09-06 实测：28 个节点里 19 个是空签名，
+    其余全是主机名，树完全扁平、前瞻退化成 s0→s0 自环）。
+    """
+    if not isinstance(title, str):
+        return ""
+    text = title.strip()
+    return "" if _HOSTNAME_LIKE.match(text) else text
+
+
 def build_observation(osworld_obs: Mapping[str, Any]) -> dict[str, Any]:
     """把 OSWorld ``_get_obs()`` 映射成 EvoTree 的状态输入。
 
-    ``cur_app`` 和活动窗口标题来自 OSWorld 的结构化字段；a11y tree、截图和
-    执行结果原样保留，供后续更精细的 distiller 使用。没有标题时使用空串，
-    不根据截图猜测窗口或弹窗。
+    ``cur_app`` 和活动窗口标题来自 OSWorld 的结构化字段。窗口标题会过一遍
+    ``_clean_window_title``，因为上游解析 ``wmctrl`` 时把主机名当成了标题。
+
+    a11y tree 在 ``--observation_type screenshot`` 下是 ``None``（runner 只在
+    a11y_tree/som 等模式才请求它），所以 φ 目前只能依赖 ``apps``/``cur_app``
+    这两个结构化字段，不能改用 a11y tree 提取。
     """
 
     apps = osworld_obs.get("apps")
@@ -43,9 +67,9 @@ def build_observation(osworld_obs: Mapping[str, Any]) -> dict[str, Any]:
 
     app = osworld_obs.get("cur_app") or active_window.get("app_name") or osworld_obs.get("app") or "unknown"
     window = (
-        osworld_obs.get("window")
-        or active_window.get("title")
-        or osworld_obs.get("window_title")
+        _clean_window_title(osworld_obs.get("window"))
+        or _clean_window_title(active_window.get("title"))
+        or _clean_window_title(osworld_obs.get("window_title"))
         or ""
     )
     dialog = osworld_obs.get("dialog")

@@ -68,8 +68,8 @@ class TestRuntimeLifecycle:
         sheet = memory.read_cheatsheet("rename directory", observation())
         assert sheet.recommendations[0].action.name == "os.rename_directory"
 
-    def test_failed_episode_is_committed_without_cost_to_go(self):
-        """整轮失败但动作没报错：边记 n+1 且算成功，只是没有 cost-to-go。"""
+    def test_failed_episode_marks_edge_as_failure(self):
+        """整轮失败 → 边记失败，即使这一步工具没报错。"""
         memory = EvoTreeMemory()
         runtime = EvoTreeRuntime(memory)
         runtime.begin("rename directory")
@@ -79,11 +79,14 @@ class TestRuntimeLifecycle:
         tree = next(iter(memory.forest._trees.values()))
         edge = tree.out_edges("s0")[0]
         assert edge.n == 1
-        assert edge.n_success == 1
+        assert edge.n_success == 0
         assert edge.steps_after_success == []
 
-    def test_note_marks_edge_level_failure(self):
-        """在线 hook 只传 note 时，按"有报错即失败"推断边级成败。"""
+    def test_online_note_does_not_lower_success_rate(self):
+        """在线 hook 传了报错 note，但整轮成功 → 边仍记成功。
+
+        note 的用途是注意栏（工具有什么坑），不是成功率。
+        """
         memory = EvoTreeMemory()
         runtime = EvoTreeRuntime(memory)
         runtime.begin("rename directory")
@@ -98,8 +101,9 @@ class TestRuntimeLifecycle:
         tree = next(iter(memory.forest._trees.values()))
         edge = tree.out_edges("s0")[0]
         assert edge.n == 1
-        assert edge.n_success == 0
-        assert edge.to_fail is not None
+        assert edge.n_success == 1
+        assert edge.to_success is not None
+        assert edge.notes == ["OSError: target exists"]
 
     def test_explicit_action_success_overrides_note_inference(self):
         """显式传 action_success 时以它为准（note 可能只是警告不是失败）。"""

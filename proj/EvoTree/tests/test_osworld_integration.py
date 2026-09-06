@@ -152,8 +152,12 @@ def test_first_action_is_recorded_without_explicit_get_obs():
     assert [edge.n for edge in tree.all_edges()] == [1]
 
 
-def test_execution_error_marks_edge_failure():
-    """exe_result 里的报错 → 这条边记失败，落点挂 to_fail。"""
+def test_execution_error_goes_to_cautions():
+    """exe_result 里的报错进注意栏；成功率由整轮结果决定。
+
+    ``FakeEnv.evaluate()`` 返回 1.0 → 整轮成功 → 边记成功，尽管这一步
+    工具报了错。报错文本仍抄进 global_notes（idea §0 写入第 3 步）。
+    """
 
     class FailingEnv(FakeEnv):
         def step(self, action, pause=0):
@@ -173,8 +177,8 @@ def test_execution_error_marks_edge_failure():
 
     tree = memory.forest.get_tree(memory.distiller.distill_task("rename directory").template_id)
     edge = tree.out_edges("s0")[0]
-    assert edge.n == 1 and edge.n_success == 0
-    assert edge.to_fail is not None
+    assert edge.n == 1 and edge.n_success == 1
+    assert edge.to_success is not None
     # 工具报错抄进全局手册（idea §0 写入第 3 步）。
     assert memory.notes.query("os.rename_directory")
 
@@ -285,3 +289,25 @@ def test_gui_and_mcp_success_paths_rank_mcp_by_cost_to_go():
     )
     assert sheet.recommendations[0].action.name == "os.rename_directory"
     assert sheet.recommendations[0].mean_steps_to_go == 1
+
+
+def test_hostname_is_not_used_as_window_title():
+    """回归锁：主机名不能当窗口标题。
+
+    OSWorld 的 get_current_apps() 解析 ``wmctrl -xl`` 时取了 parts[3]（主机名）
+    而非 parts[4]（标题）。2026-09-06 实测：28 个状态节点里 19 个是空签名，
+    其余全是 "user-virtual-machine"，树完全扁平、前瞻退化成 s0→s0 自环。
+    """
+    fake = {
+        "cur_app": "nautilus",
+        "cur_window_id": "w1",
+        "apps": {"w1": {"app_name": "nautilus", "title": "user-virtual-machine"}},
+    }
+    assert build_observation(fake)["window"] == ""
+
+    real = {
+        "cur_app": "impress",
+        "cur_window_id": "w1",
+        "apps": {"w1": {"app_name": "impress", "title": "deck.pptx - Impress"}},
+    }
+    assert build_observation(real)["window"] == "deck.pptx - Impress"

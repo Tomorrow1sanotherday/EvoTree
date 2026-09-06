@@ -83,12 +83,11 @@ class TestWriteEpisode:
         assert [edge.n_success for edge in edges] == [1, 1]
         assert all(edge.steps_after_success for edge in edges)
 
-    def test_failed_episode_records_attempts_without_cost_to_go(self):
-        """整轮失败：动作本身没报错的边仍算成功，但不记 cost-to-go。
+    def test_failed_episode_marks_every_edge_as_failure(self):
+        """整轮失败 → 这轮走过的每条边都记一次失败，且不记 cost-to-go。
 
-        边级成败看的是"这次调用有没有报错"，不是"整轮任务成没成"。这两步
-        都没报错，所以 n_success 照记；整轮失败只意味着没走到终点，
-        steps_after_success 无从谈起（idea §0 写入第 4 步的前提不成立）。
+        边的成功率 = 整轮任务成没成。这两步工具都没报错，但任务失败了，
+        说明这条路径没走通，沿途每步都不该被当成正确答案推荐给下一轮。
         """
         memory = EvoTreeMemory()
         memory.write_episode(episode(success=False))
@@ -96,14 +95,19 @@ class TestWriteEpisode:
         edges = list(tree.all_edges())
         assert len(edges) == 2
         assert all(edge.n == 1 for edge in edges)
-        assert all(edge.n_success == 1 for edge in edges)
+        assert all(edge.n_success == 0 for edge in edges)
         assert all(edge.steps_after_success == [] for edge in edges)
 
-    def test_failed_action_is_recorded_as_edge_failure(self):
-        """动作报错 → 这条边记失败，失败落点挂 to_fail 且有自己的出边。
+    def test_tool_error_goes_to_cautions_not_success_rate(self):
+        """工具报错只进注意栏，不压低成功率。
 
-        对应 idea §8 Episode 1：整轮**成功**的轨迹里，中途越界失败的那条边
-        应记 p<1，失败落点 s_err 是带出边的正常状态，而不是被整轮成功抹平。
+        整轮成功说明这条路走通了，沿途每条边 p=1.0；中途那次工具报错作为
+        坑位笔记进边的 notes 和 global_notes。
+
+        这与 idea §8 的 p=0.33 不同（那是按单步报错算的），偏差已在
+        ``memory.write_episode`` 的说明里记录：越界信息没丢，只是从推荐栏
+        移到了注意栏。理由是实测 12 个失败任务的真实工具报错为 0 次，
+        用报错当成功率会让 p 退化成常量。
         """
         memory = EvoTreeMemory()
         memory.write_episode(
@@ -129,18 +133,21 @@ class TestWriteEpisode:
             )
         )
         tree = tree_for(memory, "rename a directory")
-        failed = tree.out_edges("s0")[0]
-        assert failed.n == 1 and failed.n_success == 0
-        assert failed.to_fail is not None
-        assert tree.node_by_id(failed.to_fail).sig.window == "Error dialog"
-        # 踩坑的那步不该被算进"还差几步到终点"。
-        assert failed.steps_after_success == []
-        recovered = tree.out_edges(failed.to_fail)[0]
-        assert recovered.n_success == 1
-        assert recovered.steps_after_success == [1]
+        first = tree.out_edges("s0")[0]
+        # 整轮成功 → 这条边算成功，尽管这一步工具报了错。
+        assert first.n == 1 and first.n_success == 1
+        assert first.to_success is not None
+        assert tree.node_by_id(first.to_success).sig.window == "Error dialog"
+        # 报错文本仍进边的 notes 与全局注意栏。
+        assert first.notes == ["OSError: target exists"]
+        assert memory.notes.query("rename_directory")
 
-    def test_mixed_episode_matches_idea_walkthrough(self):
-        """idea §8 的数字：同一条边越界失败 2 次 + 成功 1 次 → n=3, p=1/3。"""
+    def test_repeated_action_accumulates_under_episode_result(self):
+        """同一条边走 3 次、整轮成功 → n=3、p=1.0，两次报错各留一条注意。
+
+        对照 idea §8：文档按单步报错算得 p=1/3，本实现按整轮成败算得 1.0。
+        两次越界没有丢失，作为 notes 留在边上并抄进 global_notes。
+        """
         memory = EvoTreeMemory()
         steps = []
         for index in range(2):
@@ -172,7 +179,7 @@ class TestWriteEpisode:
         tree = tree_for(memory, "duplicate the last slide")
         edge = tree.out_edges("s0")[0]
         assert edge.n == 3
-        assert edge.n_success == 1
+        assert edge.n_success == 3  # 整轮成功 → 三次都算成功
         assert edge.notes == ["pos out of range", "pos out of range"]
         # 报错文本进了全局坑位手册（跨任务共享的工具级知识）。
         assert memory.notes.query("duplicate_slide")

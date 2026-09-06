@@ -118,16 +118,25 @@ class EvoTreeMemory:
     def write_episode(self, episode: Episode) -> None:
         """写入一个统一 Episode。这是 OSWorld 适配器和在线 runtime 的正式入口。
 
-        严格区分两个成败（idea §0 写入的第 3 步与第 4 步）：
+        **边的成功率 = 整轮任务成没成**（``episode.success``）。这是方法的原始
+        定义：``p(e)`` 要回答"从这个状态选这个动作，最后能不能把任务做成"，
+        因为路径选择需要的正是这个量。
 
-        - **边级**（``step.action_success``）决定 ``n_success`` 与落点指针。
-          一次工具报错就是这条边的一次失败，即使整轮任务最终成功。
-        - **轮级**（``episode.success``）只决定要不要记 cost-to-go，
-          且只把**真正走通的那些步**计入剩余步数。
+        工具有没有报错是**另一个量**，只进 notes / global_notes（注意栏），
+        不参与 ``p``。两者不能互换：
 
-        这样 idea §8 的贯穿示例才成立：整轮成功但中途越界两次的
-        ``duplicate_slide`` 边记 ``n=3、p=0.33``，失败落点 ``s_err``
-        拿到自己的出边统计，而不是被记成一条 100% 可靠的边。
+        - 工具 API 成功、任务照样失败 —— 2026-09-06 实测：20 任务中 12 个失败
+          任务的真实工具报错为 **0 次**。若拿工具报错当成功率，所有边都会变成
+          ``p=1.0`` 失去区分度，且失败轨迹里的动作会被当成正确答案推荐出去。
+        - 反之工具报一次错、整轮仍可能绕过去做成，那条路依然值得推荐。
+
+        与 idea §8 的偏差（明确记录）：§8 举的 ``duplicate_slide`` 越界失败两次
+        应记 ``n=3、p=0.33``，那是按"单步报错"算的。本实现按整轮成败算，同一例
+        得到 ``p=1.0``（整轮成功）+ notes 里两条越界记录。**越界这件事没丢，只是
+        从推荐栏移到了注意栏** —— 推荐栏管"走哪条路"，注意栏管"这工具有什么坑"。
+
+        代价：单轮评测时一棵树里所有边同分（任务成了全 1、败了全 0），无法在树
+        内部区分动作优劣。**必须多轮重复**（idea §12 Setting I 三轮）才能拉开。
         """
         if not self.write_enabled or episode.is_empty:
             return
@@ -147,14 +156,13 @@ class EvoTreeMemory:
             edge = tree.upsert_step(
                 from_sig=from_sig,
                 action=action,
-                success=step.action_success,
+                success=episode.success,
                 to_sig=to_sig,
                 note=step.note,
             )
-            # cost-to-go 只统计"走通了的"步：失败的绕行步不该被算进
-            # "还差几步到终点"，否则效率项会把踩坑的代价算成路径长度。
-            if episode.success and step.action_success:
+            if episode.success:
                 success_path.append(edge)
+            # 工具报错另记注意栏：不影响 p，但要让 agent 知道这工具的坑。
             if step.note and action.kind == ActionKind.TOOL:
                 self.notes.add_note(action.name, step.note)
 
