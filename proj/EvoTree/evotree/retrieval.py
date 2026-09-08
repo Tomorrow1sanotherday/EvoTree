@@ -128,10 +128,35 @@ class Retriever:
     # ------------------------------------------------------------------ #
     # ② 推荐栏：打分取前 k，各前瞻 1 层
     # ------------------------------------------------------------------ #
+    def _is_recommendable(self, edge: ActionEdge) -> bool:
+        """走过、且从没通向成功的边不进推荐栏（只是不推荐，仍留在森林里）。
+
+        推荐栏回答的是"该走哪条路"。一条走过 n 次、``val`` 仍为 0 的边，说明
+        它既没通向成功（p=0），也没留下 cost-to-go（``d=inf``）—— 把它推到
+        首位等于告诉模型"推荐一个已知走不通的动作"。
+
+        2026-09-08 实测：改成按整轮成败记账后，失败轨迹上的边同时满足
+        ``p=0``、``val=0``、``to_success is None``（前瞻也断），是三重死边；
+        而 ``select_score`` 里的 UCB 项恒 >0，不显式过滤就会照样被推上去
+        （实测三条 p=0 的边 score 同为 0.3144，全部来自 UCB）。
+
+        **未探索边（n=0）不在此列。** 它们的 ``val`` 同样是 0，但语义是"还没
+        试过"，``ucb_bonus`` 对它们返回 inf 正是要让其优先露脸；一并滤掉等于
+        关掉探索。
+
+        坑位知识不会因此丢失 —— 报错仍在边的 notes 与 global_notes 里，由注意
+        栏负责警告（注意栏永不推荐，见模块 docstring）。
+        """
+        if edge.n <= 0:
+            return True
+        return edge_value(edge, self.gamma) > 0
+
     def _build_recommendations(
         self, tree: ExperienceTree, node_id: str, state_visits: int
     ) -> list[Recommendation]:
-        edges = tree.out_edges(node_id)
+        # 先滤掉"已知走不通"的边，再排序取前 k：UCB 项恒 >0，不过滤的话
+        # 一条 p=0 的死边照样能靠探索分挤进推荐栏。
+        edges = [e for e in tree.out_edges(node_id) if self._is_recommendable(e)]
         # 只对"岔路口"（多出边）里有价值的边推荐；按 select_score 排序
         scored = sorted(
             edges,
