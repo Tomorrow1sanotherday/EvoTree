@@ -24,6 +24,33 @@ patch series。补丁目标是 OSWorld 源码树根目录，包含：
    - 为 VM 内 MCP 依赖安装增加成功/失败标记。
    - 安装失败或校验失败时回传 `/tmp/mcpdeps.log` 尾部，避免只看到笼统的
      `ModuleNotFoundError`。
+6. `0006-fix-window-title-column-and-app-list-race.patch`
+   - `get_current_apps()` 把 `wmctrl -xl` 的**客户机名**列当成了窗口标题
+     （`parts[3]` → 应为 `parts[4]`）。后果：所有窗口的 `title` 都等于主机名
+     `user-virtual-machine`，状态签名 `(app, window, dialog)` 里的 window 变成
+     常量，完全失去区分度。
+   - `_get_obs()` 的取窗口重试循环只在抛异常时重试，窗口列表尚未就绪
+     （`cur_id not in app_list`）时不重试，直接得到 `cur_app=None`。TCG 软件
+     模拟下开窗后 `wmctrl -xl` 要 >25s 才列得出，这个窗口期很宽。顺带补上
+     原循环缺失的 `break`（原实现无论成败都恒定调用三次）。
+
+   2026-09-08 真机实测证据（`temp/rh_probe_wmctrl2.py`）：
+
+   ```text
+   cur_app       = 'Org.gnome.Nautilus'
+   cur_window_id = '0x04400008'
+   apps = {'0x0480000a': {'app_name': 'Gnome-terminal',
+                          'title': 'user-virtual-machine'},
+           '0x04400008': {'app_name': 'Org.gnome.Nautilus',
+                          'title': 'user-virtual-machine'}}
+   ```
+
+   两个不同应用共享同一个假 title；窗口 ID 两侧格式一致（都是补零到 8 位），
+   **不存在 ID 格式不匹配**——早前的补零猜测已被这次实测否定。
+
+   受影响的下游：`evotree/osworld_integration.py::_clean_window_title` 是本
+   bug 的下游兜底（把主机名识别出来丢弃）。上游修好后它退化成保险丝，正则
+   `^[\w-]+-virtual-machine$|^localhost$` 足够窄，不会误伤真实标题。
 
 ## 基线与目标
 
@@ -65,6 +92,8 @@ git apply --check /path/to/patches/0004-fix-HuggingFace-task-download-mirror.pat
 git apply /path/to/patches/0004-fix-HuggingFace-task-download-mirror.patch
 git apply --check /path/to/patches/0005-diagnose-MCP-dependency-install.patch
 git apply /path/to/patches/0005-diagnose-MCP-dependency-install.patch
+git apply --check /path/to/patches/0006-fix-window-title-column-and-app-list-race.patch
+git apply /path/to/patches/0006-fix-window-title-column-and-app-list-race.patch
 ```
 
 也可以在干净 Git 工作树中一次提交整个系列：

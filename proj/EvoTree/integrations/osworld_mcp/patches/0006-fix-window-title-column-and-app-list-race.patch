@@ -1,0 +1,42 @@
+diff --git a/desktop_env/desktop_env.py b/desktop_env/desktop_env.py
+--- a/desktop_env/desktop_env.py
++++ b/desktop_env/desktop_env.py
+@@ -377,7 +377,12 @@
+                 continue
+             window_id = parts[0]
+             app_name = '.'.join(parts[2].split('.')[-(math.ceil(parts[2].count('.') / 2)):])
+-            title = parts[3]
++            # `wmctrl -xl` 每行是 <窗口ID> <桌面号> <WM_CLASS> <客户机名> <窗口标题>。
++            # 标题在 parts[4]；parts[3] 是客户机名（如 user-virtual-machine），
++            # 取错会让所有窗口共享同一个假标题，下游按 (app, window) 归堆时完全
++            # 失去区分度。2026-09-08 真机实测：Nautilus 与 Gnome-terminal 的
++            # title 同为 user-virtual-machine。
++            title = parts[4] if len(parts) > 4 else ''
+             app_list[window_id] = {
+                 'app_name': app_name,
+                 'title': title
+@@ -419,6 +424,7 @@
+         
+         self.maximize_window()
+ 
++        app_list, cur_id = {}, ''
+         for i in range(3):
+             try:
+                 app_list, cur_id = self.get_current_apps()
+@@ -427,6 +433,16 @@
+                     raise e
+                 logger.error(f"Failed to get current apps: {e}")
+                 time.sleep(1)
++                continue
++            # 窗口注册有延迟（TCG 软件模拟下尤其慢，2026-09-08 实测开窗后 >25s
++            # 才列得出）：`wmctrl -xl` 可能还没列出刚打开的窗口，而 :ACTIVE: 已
++            # 指向它，于是 cur_id not in app_list -> cur_app=None -> 状态签名退化
++            # 成 unknown。只要还有重试机会就再等一次，别把“还没就绪”记成“没有
++            # 应用”。原循环没有 break，恒定调用三次；现在成功即出，顺带省两次往返。
++            if cur_id and cur_id in app_list:
++                break
++            if i < 2:
++                time.sleep(1)
+ 
+         tool_name = None
+         if cur_id in app_list:
