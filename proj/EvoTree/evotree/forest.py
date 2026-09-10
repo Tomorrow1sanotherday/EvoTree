@@ -124,6 +124,12 @@ class ExperienceTree:
         if success:
             edge.n_success += 1
 
+        # 语义取值记在边上（不进主键，所以不影响上面的归堆）。
+        # 边按 (from, α主键) 归堆，同一条边会先后收到不同取值 —— 那正是
+        # "哪种写法通了、哪种没通"的原始材料，全部留下。
+        if action.args:
+            edge.add_arg_sample(dict(action.args))
+
         # 连边：把落点状态挂到 to_success / to_fail（"连起来"的指针）
         if to_sig is not None:
             to_node = self.get_or_create_node(to_sig)
@@ -203,6 +209,7 @@ class ExperienceTree:
                         "kind": e.action.kind.value,
                         "name": e.action.name,
                         "arg_slots": list(e.action.arg_slots),
+                        "args": dict(e.action.args),
                     },
                     "to_success": e.to_success,
                     "to_fail": e.to_fail,
@@ -210,6 +217,7 @@ class ExperienceTree:
                     "n_success": e.n_success,
                     "steps_after_success": e.steps_after_success,
                     "notes": e.notes,
+                    "arg_samples": e.arg_samples,
                 }
                 for e in self._edges.values()
             ],
@@ -235,6 +243,7 @@ class ExperienceTree:
                 kind=ActionKind(ed["action"]["kind"]),
                 name=ed["action"]["name"],
                 arg_slots=tuple(ed["action"].get("arg_slots", [])),
+                args=ed["action"].get("args", {}),
             )
             edge = ActionEdge(
                 from_id=ed["from"],
@@ -245,6 +254,7 @@ class ExperienceTree:
                 n_success=ed.get("n_success", 0),
                 steps_after_success=ed.get("steps_after_success", []),
                 notes=ed.get("notes", []),
+                arg_samples=ed.get("arg_samples", []),
             )
             tree._edges[edge.edge_key()] = edge
         return tree

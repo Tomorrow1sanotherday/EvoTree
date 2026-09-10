@@ -105,18 +105,41 @@ class ActionTmpl:
     - GUI 操作：一句语义描述，如 "点击 Format 菜单"。**坐标一律丢弃**
       （坐标跨轮漂移，是经验不可复用的根源）。
 
+    ## args：可复用的语义值（2026-09-10 加）
+
+    只有主键的 α 在真实数据上退化成了常量。实测 pass3 一棵树里五条
+    ``computer_use.click`` 成功率各不相同却无法区分，而这一步真正的内容
+    —— 那条 ``find ... -exec cp`` 命令 —— 被整个丢掉，渲染进 prompt 就是
+    "推荐：computer_use.click —— 2次·成功率1.00"，信息量为零。
+
+    修法不是把值塞进主键（那会让每条不同命令各成一条边，统计碎成 n=1，
+    重蹈 window 标题带查询串的覆辙），而是分两层：
+
+        主键（key）：kind + name + arg_slots —— 粗，负责归堆，不变。
+        args      ：这条边上见过的语义值 —— 细，负责说清"到底干了什么"。
+
+    判据是**跨轮可复用性**，不是"是不是参数"：
+        入库：text（命令原文）、keys（快捷键）—— 换一轮照样能用；
+        丢弃：coordinate（跨轮漂移）、pixels、time —— 复用即错。
+
+    与 ``StateSig.facts`` 同构：``compare=False`` + 不进 ``key()``，
+    所以加了它不改变任何归堆行为，只让边"说得出话"。
+
     Attributes:
         kind:      TOOL 还是 GUI。
         name:      工具名（TOOL）或语义描述（GUI）。
         arg_slots: 参数槽位名（仅 TOOL 有意义），如 ("idx", "pos")。
+        args:      可复用的语义值，如 {"text": "cp file1 dir1"}。**不进主键。**
     """
 
     kind: ActionKind
     name: str
     arg_slots: tuple[str, ...] = ()
+    # args 不进主键：与 facts 同样用 compare=False，并在 key() 里显式排除
+    args: dict[str, str] = field(default_factory=dict, compare=False)
 
     def key(self) -> tuple[str, str, str]:
-        """返回用于归堆的主键。"""
+        """返回用于归堆的主键（不含 args —— 同一动作的不同取值仍归同一条边）。"""
         return (self.kind.value, self.name, ",".join(self.arg_slots))
 
 
@@ -162,6 +185,12 @@ class ActionEdge:
             每次成功时，"这一步之后还走了几步"的列表。
             由写入时从终点倒数得到（cost-to-go 的原始数据，详见 forest.py）。
         notes:        这条边踩过的坑（工具报错等），也抄送 global_notes。
+        arg_samples:  这条边上见过的语义取值样本（去重、保序、有上限）。
+            边按主键归堆，所以同一条边会收到多次不同取值 —— 比如
+            ``computer_use.type`` 这一条边上先后出现过
+            ``cp file1 dir1 dir2 dir3`` 和 ``cp file1 dir1; cp file1 dir2``。
+            这里把它们**全部留下**：抽规则时要看的正是"哪种写法通了、
+            哪种没通"，只留最后一次等于把对照组扔了。
 
     统计量的两个派生值（在 scoring.py 里计算，不存这里，避免冗余）：
         p = n_success / n            成功率（可靠性）
@@ -176,6 +205,21 @@ class ActionEdge:
     n_success: int = 0
     steps_after_success: list[int] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
+    arg_samples: list[dict[str, str]] = field(default_factory=list)
+
+    def add_arg_sample(self, args: dict[str, str], limit: int = 8) -> None:
+        """记一次语义取值；重复的不再记，超过 limit 条后丢弃新样本。
+
+        去重让"同一条命令重试三次"只占一格；上限防止一条高频边把
+        tree.json 撑大（实测 type 边单轮就被走了 7 次）。
+        """
+        if not args:
+            return
+        if args in self.arg_samples:
+            return
+        if len(self.arg_samples) >= limit:
+            return
+        self.arg_samples.append(dict(args))
 
     def edge_key(self) -> tuple[str, tuple[str, str, str]]:
         """返回用于归堆的主键 = (起点节点, 动作主键)。

@@ -6,13 +6,14 @@
     <tool_call>{"name": "<工具名>", "arguments": {...}}</tool_call>
     <conclusion>agent 自己写的语义描述</conclusion>
 
-动作归一化规则：
-    - ``computer_use`` 是 GUI 动作，使用稳定的子动作类型归堆，丢弃坐标和具体输入值；
-    - 其它 MCP 工具保留工具名，用排序后的参数名作为槽位，丢弃参数值；
-    - DONE / terminate 是终止声明，不是普通动作。
+动作归一化规则（主键粗、内容细，两层分开）：
+    - 主键：``computer_use`` 用子动作类型归堆；其它 MCP 工具用工具名 + 排序后
+      的参数名。坐标一律不进主键。
+    - 内容：``text``（命令原文）、``keys``（快捷键）等**跨轮可复用**的值存进
+      ``ActionTmpl.args``，不参与归堆。``coordinate``/``pixels``/``time``
+      跨轮漂移，复用即错，仍然丢弃。
 
-这里不把 ``conclusion`` 作为动作主键：自然语言措辞跨轮不稳定。等有足够真实
-数据后，可以在不改变接口的前提下加入更细的 GUI 语义归一化。
+这里不把 ``conclusion`` 作为动作主键：自然语言措辞跨轮不稳定。
 """
 
 from __future__ import annotations
@@ -34,6 +35,55 @@ _CONCLUSION = re.compile(
 
 _GUI_TOOL_NAME = "computer_use"
 _TERMINAL_ACTIONS = {"terminate", "done", "fail"}
+
+# --------------------------------------------------------------------------- #
+# α 的语义取值：哪些参数值跨轮可复用（入 args），哪些是噪声（丢弃）
+# --------------------------------------------------------------------------- #
+# 判据是**跨轮可复用性**，不是"是不是参数"：
+#   text —— 命令原文 `find ~/Desktop/photos -type f -iname '*.jpg' -exec cp ...`
+#           换一轮照抄就能用，是这一步真正的内容；
+#   keys —— 快捷键 ["CTRL","ALT","T"]，与 EE-MCP 的 "Ctrl+P for print dialog"
+#           同型，是可直接执行的知识；
+#   coordinate/pixels/time —— 跨轮漂移，复用即错，必须丢（原设计"坐标一律
+#           丢弃"的初衷正确，错在把 text/keys 一并丢了）。
+_REUSABLE_ARGS = ("text", "keys", "command", "url", "path")
+
+# 单条语义值的长度上限。命令原文可以很长，但整段进 prompt 会挤占上下文
+# （与 _NOTE_MAX_LEN 同理），入库前截断。
+_ARG_MAX_LEN = 160
+
+
+def _format_arg_value(value: Any) -> str:
+    """把一个参数值压成稳定的字符串。
+
+    ``keys`` 是列表 ``["CTRL","ALT","T"]``，压成 ``CTRL+ALT+T`` —— 既是人话，
+    也让同一快捷键的不同书写归一。其余按原文，超长截断。
+    """
+    if isinstance(value, (list, tuple)):
+        text = "+".join(str(v).strip() for v in value if str(v).strip())
+    else:
+        text = str(value).strip()
+    if len(text) > _ARG_MAX_LEN:
+        text = text[:_ARG_MAX_LEN] + "…"
+    return text
+
+
+def extract_reusable_args(args: Mapping[str, Any]) -> dict[str, str]:
+    """从一次调用的 arguments 里挑出跨轮可复用的语义值。
+
+    这是 2026-09-10 修复的核心：原实现对 GUI 动作一律 ``arg_slots=()``、
+    对 TOOL 只留参数名，导致边上完全不含内容 —— 实测一棵树里五条
+    ``computer_use.click`` 无法区分，而 ``find ... -exec cp`` 这条整个任务
+    的正确答案被丢弃。
+    """
+    out: dict[str, str] = {}
+    for key in _REUSABLE_ARGS:
+        if key not in args:
+            continue
+        text = _format_arg_value(args[key])
+        if text:
+            out[key] = text
+    return out
 
 # 无歧义的报错标记。**不含裸的 "error"** —— MCP 成功返回里就带
 # ``is_error=False``，用子串匹配 "error" 会把每次成功调用都判成失败。
@@ -178,17 +228,24 @@ class OSWorldDistiller(RuleBasedDistiller):
             args = {}
 
         if name == _GUI_TOOL_NAME:
-            # 子动作是目前最稳定的 GUI 归一化粒度；coordinate/text 等值不入库。
+            # 子动作是最稳定的 GUI 归堆粒度，仍作主键；
+            # text/keys 等可复用值走 args（不进主键，见 ActionTmpl 文档）。
             sub_action = str(args.get("action", "gui")).strip() or "gui"
             return ActionTmpl(
                 kind=ActionKind.GUI,
                 name=f"{name}.{sub_action}",
                 arg_slots=(),
+                args=extract_reusable_args(args),
             )
 
         # MCP 工具：保留工具名，参数名作槽位，参数值不进入动作主键。
         arg_slots = tuple(sorted(str(key) for key in args))
-        return ActionTmpl(kind=ActionKind.TOOL, name=name, arg_slots=arg_slots)
+        return ActionTmpl(
+            kind=ActionKind.TOOL,
+            name=name,
+            arg_slots=arg_slots,
+            args=extract_reusable_args(args),
+        )
 
     @staticmethod
     def is_parse_error(raw_action: Mapping[str, Any]) -> bool:

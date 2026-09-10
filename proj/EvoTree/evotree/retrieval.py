@@ -48,6 +48,13 @@ class Recommendation:
     low_confidence: bool
     lookahead: Optional[ActionTmpl] = None  # 前瞻 1 层：这步之后最优的下一个动作
     lookahead_hint: Optional[str] = None    # 前瞻的人话提示
+    arg_samples: list[dict[str, str]] = field(default_factory=list)
+    """这条边上见过的语义取值（命令原文 / 快捷键）。
+
+    没有它，推荐栏渲染出来是"推荐：computer_use.click —— 2次·成功率1.00"，
+    模型看到只知道"点击"，不知道点哪 —— 信息量为零（2026-09-10 实测，
+    一棵树里五条 click 成功率各异却无法区分）。
+    """
 
 
 @dataclass
@@ -172,6 +179,7 @@ class Retriever:
                 mean_steps_to_go=mean_steps_to_go(edge),
                 score=select_score(edge, state_visits, self.gamma, self.ucb_c),
                 low_confidence=is_low_confidence(edge),
+                arg_samples=list(edge.arg_samples),
             )
             self._attach_lookahead(tree, edge, rec)
             recs.append(rec)
@@ -234,13 +242,41 @@ class Retriever:
 # --------------------------------------------------------------------------- #
 # 小抄渲染：拼进 prompt 的文本（哪栏空整段不出现）
 # --------------------------------------------------------------------------- #
+# 一条推荐最多展示几个语义取值。EE-MCP 附录 G 原则一"conciseness over
+# coverage"：不限量的经验文本会与任务信息抢注意力，实测反而掉点。而 OWL
+# 又刻意把 worker 的 context 保持干净，两头夹击 —— 所以这里取 2。
+_MAX_ARG_SAMPLES_SHOWN = 2
+
+
+def _fmt_arg_sample(sample: dict[str, str]) -> str:
+    """把一组语义取值渲染成人能照做的一句。
+
+    对齐 EE-MCP 附录 G 原则二"actionable specificity"：
+    ``Ctrl+P to open the print dialog`` 有效，``be efficient`` 无效 ——
+    判据是能不能照着做。
+    """
+    if "keys" in sample:
+        return sample["keys"]
+    for key in ("text", "command", "url", "path"):
+        if key in sample:
+            return sample[key]
+    return "; ".join(f"{k}={v}" for k, v in sample.items())
+
+
 def render_cheatsheet(sheet: Cheatsheet) -> str:
     """把小抄渲染成注入 prompt 的文本。空栏整段不出现。
 
     示例输出：
-        [经验] 推荐：duplicate_slide(idx,pos) —— 47次·成功率0.92·平均还差2步；
-                    完成后 save 一步收尾
-                    [注意] pos 不得超过总页数
+        [经验] 推荐：
+          computer_use.type —— 7次·成功率0.43·平均还差2步
+              曾用：cp file1 dir1 dir2 dir3
+          os.open_shell —— 4次·成功率0.25·剩余步数未知
+        [注意]：
+          os.open_shell: Traceback ...
+
+    "曾用"这一行是 2026-09-10 加的。在此之前边上不含任何内容，渲染结果是
+    "推荐：computer_use.click —— 2次·成功率1.00" —— 模型只知道"点击"，
+    不知道点哪，无法照做。
     """
     lines: list[str] = []
 
@@ -260,6 +296,10 @@ def render_cheatsheet(sheet: Cheatsheet) -> str:
             if rec.lookahead_hint:
                 line += f"；{rec.lookahead_hint}"
             lines.append(line)
+            for sample in rec.arg_samples[:_MAX_ARG_SAMPLES_SHOWN]:
+                text = _fmt_arg_sample(sample)
+                if text:
+                    lines.append(f"      曾用：{text}")
 
     if sheet.cautions:
         lines.append("[注意]：")
