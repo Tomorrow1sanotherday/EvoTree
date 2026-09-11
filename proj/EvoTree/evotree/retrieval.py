@@ -48,12 +48,16 @@ class Recommendation:
     low_confidence: bool
     lookahead: Optional[ActionTmpl] = None  # 前瞻 1 层：这步之后最优的下一个动作
     lookahead_hint: Optional[str] = None    # 前瞻的人话提示
-    arg_samples: list[dict[str, str]] = field(default_factory=list)
-    """这条边上见过的语义取值（命令原文 / 快捷键）。
+    arg_samples: list[dict] = field(default_factory=list)
+    """这条边上见过的语义取值（命令原文 / 快捷键），**已按成功率排序**。
 
     没有它，推荐栏渲染出来是"推荐：computer_use.click —— 2次·成功率1.00"，
     模型看到只知道"点击"，不知道点哪 —— 信息量为零（2026-09-10 实测，
     一棵树里五条 click 成功率各异却无法区分）。
+
+    排序是必需的，不是优化：同一条边上挂着解法和验证命令（实测
+    ``ls dir1/file1 dir2/file1`` 与 ``cp file1 dir1 dir2 dir3`` 平权），
+    按插入序取前两条会把验证命令推到模型面前。
     """
 
 
@@ -179,7 +183,7 @@ class Retriever:
                 mean_steps_to_go=mean_steps_to_go(edge),
                 score=select_score(edge, state_visits, self.gamma, self.ucb_c),
                 low_confidence=is_low_confidence(edge),
-                arg_samples=list(edge.arg_samples),
+                arg_samples=edge.ranked_arg_samples(),
             )
             self._attach_lookahead(tree, edge, rec)
             recs.append(rec)
@@ -248,19 +252,37 @@ class Retriever:
 _MAX_ARG_SAMPLES_SHOWN = 2
 
 
-def _fmt_arg_sample(sample: dict[str, str]) -> str:
-    """把一组语义取值渲染成人能照做的一句。
+def _fmt_arg_sample(sample: dict) -> str:
+    """把一条语义取值样本渲染成人能照做的一句。
 
     对齐 EE-MCP 附录 G 原则二"actionable specificity"：
     ``Ctrl+P to open the print dialog`` 有效，``be efficient`` 无效 ——
     判据是能不能照着做。
+
+    只在这条取值**自己**有成功记录时才标注 —— 边级成功率已经在上一行给过，
+    这里重复一个相同的数字只会占位；标注的价值在于区分同一条边上"哪种写法
+    通了、哪种没通"。
     """
-    if "keys" in sample:
-        return sample["keys"]
-    for key in ("text", "command", "url", "path"):
-        if key in sample:
-            return sample[key]
-    return "; ".join(f"{k}={v}" for k, v in sample.items())
+    args = sample.get("args", {})
+    if not isinstance(args, dict):
+        return ""
+    text = ""
+    if "keys" in args:
+        text = args["keys"]
+    else:
+        for key in ("text", "command", "url", "path"):
+            if key in args:
+                text = args[key]
+                break
+        else:
+            text = "; ".join(f"{k}={v}" for k, v in args.items())
+    if not text:
+        return ""
+    n = sample.get("n", 0) or 0
+    ok = sample.get("n_success", 0) or 0
+    if n > 1 or ok:
+        text = f"{text}（{ok}/{n} 成）"
+    return text
 
 
 def render_cheatsheet(sheet: Cheatsheet) -> str:

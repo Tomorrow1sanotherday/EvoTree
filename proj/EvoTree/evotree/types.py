@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Optional
+from typing import Any, Optional
 
 
 # --------------------------------------------------------------------------- #
@@ -185,12 +185,21 @@ class ActionEdge:
             每次成功时，"这一步之后还走了几步"的列表。
             由写入时从终点倒数得到（cost-to-go 的原始数据，详见 forest.py）。
         notes:        这条边踩过的坑（工具报错等），也抄送 global_notes。
-        arg_samples:  这条边上见过的语义取值样本（去重、保序、有上限）。
+        arg_samples:  这条边上见过的语义取值样本（去重、带成败计数、有上限）。
             边按主键归堆，所以同一条边会收到多次不同取值 —— 比如
             ``computer_use.type`` 这一条边上先后出现过
             ``cp file1 dir1 dir2 dir3`` 和 ``cp file1 dir1; cp file1 dir2``。
             这里把它们**全部留下**：抽规则时要看的正是"哪种写法通了、
             哪种没通"，只留最后一次等于把对照组扔了。
+
+            每条样本形如 ``{"args": {...}, "n": 3, "n_success": 2}``。
+
+            **为什么必须记成败**（2026-09-11 重建种子时发现）：取值和整轮
+            成败原先完全没有绑定。实测 ``Copies_file`` 那条 type 边上五种
+            取值共享同一个 ``succ=4``，其中 ``ls dir1/file1 dir2/file1``
+            是**验证命令不是解法**，却和 ``cp file1 dir1 dir2 dir3`` 平权；
+            渲染按插入序取前两条，完全可能把验证命令推到模型面前。
+            记上成败后，渲染可以优先展示真正通过的那几条。
 
     统计量的两个派生值（在 scoring.py 里计算，不存这里，避免冗余）：
         p = n_success / n            成功率（可靠性）
@@ -205,21 +214,49 @@ class ActionEdge:
     n_success: int = 0
     steps_after_success: list[int] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
-    arg_samples: list[dict[str, str]] = field(default_factory=list)
+    arg_samples: list[dict[str, Any]] = field(default_factory=list)
 
-    def add_arg_sample(self, args: dict[str, str], limit: int = 8) -> None:
-        """记一次语义取值；重复的不再记，超过 limit 条后丢弃新样本。
+    def add_arg_sample(
+        self, args: dict[str, str], success: bool, limit: int = 8
+    ) -> None:
+        """记一次语义取值及其整轮成败。
 
-        去重让"同一条命令重试三次"只占一格；上限防止一条高频边把
-        tree.json 撑大（实测 type 边单轮就被走了 7 次）。
+        同一取值再次出现时只累加计数（一条命令可能试了三次、两次成一次败），
+        不新增条目 —— 去重让"重试"只占一格。上限防止一条高频边把 tree.json
+        撑大（实测 type 边单轮就被走了 7 次）。
+
+        Args:
+            args:    这次的语义取值，如 ``{"text": "cp file1 dir1"}``。
+            success: **整轮任务**成没成 —— 与 ``ActionEdge.n_success`` 同一
+                     口径（见 ``memory.write_episode`` 的说明），不是这一步
+                     的工具有没有报错。
         """
         if not args:
             return
-        if args in self.arg_samples:
-            return
+        for sample in self.arg_samples:
+            if sample.get("args") == args:
+                sample["n"] = sample.get("n", 0) + 1
+                if success:
+                    sample["n_success"] = sample.get("n_success", 0) + 1
+                return
         if len(self.arg_samples) >= limit:
             return
-        self.arg_samples.append(dict(args))
+        self.arg_samples.append(
+            {"args": dict(args), "n": 1, "n_success": 1 if success else 0}
+        )
+
+    def ranked_arg_samples(self) -> list[dict[str, Any]]:
+        """按"更可能是正确解法"排序的取值样本。
+
+        排序键：成功率降序 → 成功次数降序 → 总次数降序。插入序只作最后的
+        稳定兜底 —— 它本身不含任何信息，不该决定模型先看到哪条。
+        """
+        def rank(sample: dict[str, Any]) -> tuple[float, int, int]:
+            n = sample.get("n", 0) or 0
+            ok = sample.get("n_success", 0) or 0
+            return (ok / n if n else 0.0, ok, n)
+
+        return sorted(self.arg_samples, key=rank, reverse=True)
 
     def edge_key(self) -> tuple[str, tuple[str, str, str]]:
         """返回用于归堆的主键 = (起点节点, 动作主键)。

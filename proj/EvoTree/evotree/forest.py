@@ -128,7 +128,7 @@ class ExperienceTree:
         # 边按 (from, α主键) 归堆，同一条边会先后收到不同取值 —— 那正是
         # "哪种写法通了、哪种没通"的原始材料，全部留下。
         if action.args:
-            edge.add_arg_sample(dict(action.args))
+            edge.add_arg_sample(dict(action.args), success=success)
 
         # 连边：把落点状态挂到 to_success / to_fail（"连起来"的指针）
         if to_sig is not None:
@@ -254,7 +254,7 @@ class ExperienceTree:
                 n_success=ed.get("n_success", 0),
                 steps_after_success=ed.get("steps_after_success", []),
                 notes=ed.get("notes", []),
-                arg_samples=ed.get("arg_samples", []),
+                arg_samples=_normalize_arg_samples(ed.get("arg_samples", [])),
             )
             tree._edges[edge.edge_key()] = edge
         return tree
@@ -322,3 +322,30 @@ class ExperienceForest:
             return
         for template_id, tree in self._trees.items():
             tree.save(self._tree_path(template_id))
+
+
+def _normalize_arg_samples(raw: list) -> list[dict]:
+    """兼容早期格式：``{"text": ...}`` → ``{"args": {...}, "n": 1, "n_success": 0}``。
+
+    2026-09-10 首版 arg_samples 是裸的取值 dict，没有成败计数（那一版的缺陷：
+    解法和验证命令平权，见 ``ActionEdge.arg_samples`` 文档）。已经落盘的种子
+    要能继续读，否则历史记忆全部失联。
+
+    旧样本的成败**未知**，一律记 ``n_success=0``：宁可让它排在有成功记录的
+    取值之后，也不要凭空声称它成功过。
+    """
+    out: list[dict] = []
+    for item in raw or []:
+        if not isinstance(item, dict):
+            continue
+        if "args" in item and isinstance(item["args"], dict):
+            out.append(
+                {
+                    "args": dict(item["args"]),
+                    "n": int(item.get("n", 1) or 1),
+                    "n_success": int(item.get("n_success", 0) or 0),
+                }
+            )
+        else:
+            out.append({"args": dict(item), "n": 1, "n_success": 0})
+    return out

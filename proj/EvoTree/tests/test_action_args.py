@@ -63,6 +63,7 @@ def test_args_do_not_affect_edge_key():
     assert len(edges) == 1, "不同取值不该分裂成两条边"
     assert edges[0].n == 2
     assert len(edges[0].arg_samples) == 2, "两种写法都该留下（抽规则要对照）"
+    assert [x["args"]["text"] for x in edges[0].arg_samples] == ["cp a b", "cp c d"]
 
 
 def test_duplicate_samples_are_deduped():
@@ -84,7 +85,9 @@ def test_samples_survive_roundtrip():
         success=True,
     )
     restored = ExperienceTree.from_dict(tree.to_dict())
-    assert restored.out_edges("s0")[0].arg_samples == [{"keys": "CTRL+ALT+T"}]
+    assert restored.out_edges("s0")[0].arg_samples == [
+        {"args": {"keys": "CTRL+ALT+T"}, "n": 1, "n_success": 1}
+    ]
 
 
 def test_render_shows_the_command():
@@ -100,3 +103,100 @@ def test_render_shows_the_command():
     sheet = Retriever().retrieve(tree, sig, GlobalNotes(), candidate_tools=[])
     text = render_cheatsheet(sheet)
     assert "cp file1 dir1 dir2 dir3" in text
+
+
+# --------------------------------------------------------------------------- #
+# 取值与成败的绑定（2026-09-11）
+#
+# 首版 arg_samples 不记成败：实测 Copies_file 那条 type 边上五种取值共享同一个
+# succ=4，其中 ls dir1/file1 dir2/file1 是**验证命令不是解法**，却与
+# cp file1 dir1 dir2 dir3 平权；渲染按插入序取前两条，会把验证命令推给模型。
+# --------------------------------------------------------------------------- #
+
+
+def test_sample_records_episode_outcome():
+    tree = ExperienceTree(template_id="t")
+    sig = StateSig(app="x", window="w")
+    good = ActionTmpl(ActionKind.GUI, "computer_use.type", args={"text": "cp a b"})
+    bad = ActionTmpl(ActionKind.GUI, "computer_use.type", args={"text": "ls a b"})
+    tree.upsert_step(sig, good, success=True)
+    tree.upsert_step(sig, bad, success=False)
+
+    by_text = {
+        x["args"]["text"]: x for x in tree.out_edges("s0")[0].arg_samples
+    }
+    assert by_text["cp a b"]["n_success"] == 1
+    assert by_text["ls a b"]["n_success"] == 0
+
+
+def test_repeated_sample_accumulates_instead_of_duplicating():
+    """同一条命令试了三次（两成一败）应累加计数，而不是变成三条。"""
+    tree = ExperienceTree(template_id="t")
+    sig = StateSig(app="x", window="w")
+    action = ActionTmpl(ActionKind.GUI, "computer_use.type", args={"text": "cp a b"})
+    tree.upsert_step(sig, action, success=True)
+    tree.upsert_step(sig, action, success=False)
+    tree.upsert_step(sig, action, success=True)
+
+    samples = tree.out_edges("s0")[0].arg_samples
+    assert len(samples) == 1
+    assert samples[0]["n"] == 3
+    assert samples[0]["n_success"] == 2
+
+
+def test_successful_values_rank_first():
+    """排序必须按成功率，不能按插入序 —— 否则先出现的验证命令会挤掉解法。"""
+    tree = ExperienceTree(template_id="t")
+    sig = StateSig(app="x", window="w")
+    # 故意让"验证命令"先进来，模拟实测里的插入顺序
+    tree.upsert_step(
+        sig,
+        ActionTmpl(ActionKind.GUI, "computer_use.type", args={"text": "ls a b"}),
+        success=False,
+    )
+    tree.upsert_step(
+        sig,
+        ActionTmpl(ActionKind.GUI, "computer_use.type", args={"text": "cp a b"}),
+        success=True,
+    )
+    ranked = tree.out_edges("s0")[0].ranked_arg_samples()
+    assert ranked[0]["args"]["text"] == "cp a b"
+
+
+def test_render_prefers_successful_value():
+    """终点检验：模型先看到的必须是通过的那条。"""
+    tree = ExperienceTree(template_id="t")
+    sig = StateSig(app="x", window="w")
+    tree.upsert_step(
+        sig,
+        ActionTmpl(ActionKind.GUI, "computer_use.type", args={"text": "ls a b"}),
+        success=False,
+    )
+    edge = tree.upsert_step(
+        sig,
+        ActionTmpl(ActionKind.GUI, "computer_use.type", args={"text": "cp a b"}),
+        success=True,
+    )
+    tree.record_steps_after_success([edge])
+
+    text = render_cheatsheet(
+        Retriever().retrieve(tree, sig, GlobalNotes(), candidate_tools=[])
+    )
+    assert text.index("cp a b") < text.index("ls a b")
+
+
+def test_legacy_samples_are_readable():
+    """已落盘的旧种子（裸取值 dict、无成败）必须还能读，否则历史记忆失联。"""
+    tree = ExperienceTree(template_id="t")
+    sig = StateSig(app="x", window="w")
+    tree.upsert_step(
+        sig, ActionTmpl(ActionKind.GUI, "computer_use.type", args={"text": "x"}), True
+    )
+    raw = tree.to_dict()
+    # 退回 2026-09-10 的旧格式
+    raw["edges"][0]["arg_samples"] = [{"text": "cp file1 dir1"}]
+
+    restored = ExperienceTree.from_dict(raw)
+    sample = restored.out_edges("s0")[0].arg_samples[0]
+    assert sample["args"] == {"text": "cp file1 dir1"}
+    assert sample["n_success"] == 0, "旧样本成败未知，不能凭空声称成功"
