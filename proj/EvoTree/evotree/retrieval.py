@@ -26,6 +26,7 @@ from .scoring import (
     DEFAULT_UCB_C,
     edge_value,
     is_low_confidence,
+    is_too_shaky,
     mean_steps_to_go,
     select_score,
     success_rate,
@@ -82,17 +83,29 @@ class Cheatsheet:
 # 检索器
 # --------------------------------------------------------------------------- #
 class Retriever:
-    """五拍检索器。持有打分超参，不持有数据（数据由调用方传入）。"""
+    """五拍检索器。持有打分超参，不持有数据（数据由调用方传入）。
+
+    Args:
+        explore: 是否在排序里保留 UCB 探索项、是否让未探索边露脸。
+            默认 True。**记忆不写回时必须设 False**（由 ``EvoTreeMemory``
+            的 ``explore = write_enabled`` 默认接线保证）：探索的回报是
+            "下次走到这条边时统计变了"，冻结评测下这个回报永远不存在，
+            探索项只剩扭曲排序的噪声。实验二（2026-09-11）实测 frozen 臂
+            的小抄里 ``CTRL+ALT+T（2次·成功率0.50·低置信）`` 挤在解法前面，
+            agent 照着做了 —— 探索分是它进榜的原因之一。
+    """
 
     def __init__(
         self,
         gamma: float = DEFAULT_GAMMA,
         ucb_c: float = DEFAULT_UCB_C,
         top_k: int = 3,
+        explore: bool = True,
     ) -> None:
         self.gamma = gamma
         self.ucb_c = ucb_c
         self.top_k = top_k
+        self.explore = explore
 
     def retrieve(
         self,
@@ -140,38 +153,45 @@ class Retriever:
     # ② 推荐栏：打分取前 k，各前瞻 1 层
     # ------------------------------------------------------------------ #
     def _is_recommendable(self, edge: ActionEdge) -> bool:
-        """走过、且从没通向成功的边不进推荐栏（只是不推荐，仍留在森林里）。
+        """能进推荐栏的三道门槛（只是不推荐，边仍留在森林里）。
 
-        推荐栏回答的是"该走哪条路"。一条走过 n 次、``val`` 仍为 0 的边，说明
-        它既没通向成功（p=0），也没留下 cost-to-go（``d=inf``）—— 把它推到
-        首位等于告诉模型"推荐一个已知走不通的动作"。
+        一、已知走不通的边不进（n>0、val=0 → 没通向过成功也没留下
+        cost-to-go，三重死边；UCB 项恒 >0，不显式过滤照样会被推上去）。
 
-        2026-09-08 实测：改成按整轮成败记账后，失败轨迹上的边同时满足
-        ``p=0``、``val=0``、``to_success is None``（前瞻也断），是三重死边；
-        而 ``select_score`` 里的 UCB 项恒 >0，不显式过滤就会照样被推上去
-        （实测三条 p=0 的边 score 同为 0.3144，全部来自 UCB）。
+        二、**样本又薄又弱的边不进**（is_too_shaky）：n<3 且成功率<0.67。
+        实验二（2026-09-11）实测 ``CTRL+ALT+T（2次·成功率0.50·低置信）``
+        被当成经验推给模型，agent 照做烧掉步数 —— 低置信标注只提醒
+        "证据不足"，拦不住它进榜，所以准入层面要有一票否决。
+        方向性：薄但全胜（2/2 成）不拦 —— 那是当前最好的证据。
 
-        **未探索边（n=0）不在此列。** 它们的 ``val`` 同样是 0，但语义是"还没
-        试过"，``ucb_bonus`` 对它们返回 inf 正是要让其优先露脸；一并滤掉等于
-        关掉探索。
+        三、**不探索时未探索边不进**（n=0、explore=False）："还没试过"
+        的价值在于这次试了统计会变；冻结评测下永远不变，把它渲染成
+        "0次·成功率0.00"推给模型是纯噪声。
 
-        坑位知识不会因此丢失 —— 报错仍在边的 notes 与 global_notes 里，由注意
-        栏负责警告（注意栏永不推荐，见模块 docstring）。
+        坑位知识不会因此丢失 —— 报错仍在边的 notes 与 global_notes 里，
+        由注意栏负责警告（注意栏永不推荐，见模块 docstring）。
         """
         if edge.n <= 0:
-            return True
-        return edge_value(edge, self.gamma) > 0
+            return self.explore
+        if edge_value(edge, self.gamma) <= 0:
+            return False
+        return not is_too_shaky(edge)
+
+    def _rank_score(self, edge: ActionEdge, state_visits: int) -> float:
+        """排序键：探索开 = 价值+UCB；探索关 = 纯价值。"""
+        if not self.explore:
+            return edge_value(edge, self.gamma)
+        return select_score(edge, state_visits, self.gamma, self.ucb_c)
 
     def _build_recommendations(
         self, tree: ExperienceTree, node_id: str, state_visits: int
     ) -> list[Recommendation]:
-        # 先滤掉"已知走不通"的边，再排序取前 k：UCB 项恒 >0，不过滤的话
-        # 一条 p=0 的死边照样能靠探索分挤进推荐栏。
+        # 先过三道门槛（死边 / 薄弱边 / 不探索时的未探索边），再排序取前 k。
         edges = [e for e in tree.out_edges(node_id) if self._is_recommendable(e)]
-        # 只对"岔路口"（多出边）里有价值的边推荐；按 select_score 排序
+        # 排序键见 _rank_score：探索开 = 价值+UCB，探索关 = 纯价值
         scored = sorted(
             edges,
-            key=lambda e: select_score(e, state_visits, self.gamma, self.ucb_c),
+            key=lambda e: self._rank_score(e, state_visits),
             reverse=True,
         )
         recs: list[Recommendation] = []

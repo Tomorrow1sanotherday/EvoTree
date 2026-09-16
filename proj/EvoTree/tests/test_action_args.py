@@ -164,7 +164,13 @@ def test_successful_values_rank_first():
 
 
 def test_render_prefers_successful_value():
-    """终点检验：模型先看到的必须是通过的那条。"""
+    """终点检验：模型先看到的必须是通过的那条。
+
+    夹具是 2/3 成（一次 ls 败、两次 cp 成）：薄硬币边（n<3 且 p<0.67）自
+    2026-09-11 实验二教训起不进推荐栏（retrieval._is_recommendable），
+    本测试只关心进了推荐栏之后"哪种取值排前"，不该被准入规则分走断言
+    焦点 —— 所以样本量取到 3，同时保住"cp 2/2 严格压过 ls 0/1"的排序差。
+    """
     tree = ExperienceTree(template_id="t")
     sig = StateSig(app="x", window="w")
     tree.upsert_step(
@@ -172,11 +178,13 @@ def test_render_prefers_successful_value():
         ActionTmpl(ActionKind.GUI, "computer_use.type", args={"text": "ls a b"}),
         success=False,
     )
-    edge = tree.upsert_step(
-        sig,
-        ActionTmpl(ActionKind.GUI, "computer_use.type", args={"text": "cp a b"}),
-        success=True,
-    )
+    edge = None
+    for _ in range(2):
+        edge = tree.upsert_step(
+            sig,
+            ActionTmpl(ActionKind.GUI, "computer_use.type", args={"text": "cp a b"}),
+            success=True,
+        )
     tree.record_steps_after_success([edge])
 
     text = render_cheatsheet(

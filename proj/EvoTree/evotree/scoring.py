@@ -118,3 +118,30 @@ def is_low_confidence(edge: ActionEdge, min_n: int = 3) -> bool:
     n 很小时的成功率就是噪声，必须让 agent 知道这条建议证据不足。
     """
     return edge.n < min_n
+
+
+# 推荐准入的成功率下限（is_too_shaky 用）：薄样本的 p 连这个都够不到，
+# 说明"走过的一半还败了" —— 把它写进小抄等于推荐掷硬币。
+DEFAULT_MIN_RATE = 0.67
+
+
+def is_too_shaky(
+    edge: ActionEdge,
+    min_n: int = 3,
+    min_rate: float = DEFAULT_MIN_RATE,
+) -> bool:
+    """样本又薄又弱 → 不进推荐栏（与"低置信"标注互补的硬规则）。
+
+    实验二（2026-09-11）实测：``CTRL+ALT+T``（2次·成功率0.50）这样的
+    抛硬币边被当成"经验"推给模型，agent 照着做了，白白烧掉步数 ——
+    baseline 正是连按 10 次这个快捷键耗尽 12 步的。低置信标注只提醒
+    "证据不足"，拦不住它进推荐栏，所以准入层面要有一票否决。
+
+    两个方向刻意不拦：
+        薄但全胜（如 2/2 成）—— 那是当前最好的证据，p 越高越该露脸；
+        厚而平庸（n≥min_n、p 偏低）—— 证据充分，排序自然靠后，
+        不需要准入层面否决（否决了反而丢真实信号）。
+    """
+    if edge.n <= 0:
+        return False
+    return edge.n < min_n and success_rate(edge) < min_rate

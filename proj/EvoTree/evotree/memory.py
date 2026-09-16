@@ -62,6 +62,7 @@ class EvoTreeMemory:
         ucb_c: float = DEFAULT_UCB_C,
         top_k: int = 3,
         write_enabled: bool = True,
+        explore: Optional[bool] = None,
     ) -> None:
         """
         Args:
@@ -70,6 +71,11 @@ class EvoTreeMemory:
             gamma/ucb_c:   打分超参。
             top_k:         推荐栏最多给几条。
             write_enabled: 是否允许写入（Setting II 冻结评测时设 False）。
+            explore:       检索时保留 UCB 探索项 / 未探索边露脸与否。
+                           None = 跟随 write_enabled：探索的回报是"下次统计
+                           会变"，不写回的冻结评测下它永远不存在，留着只剩
+                           扭曲排序的噪声（2026-09-11 实验二实测 frozen 臂
+                           小抄里低置信掷硬币边挤在解法前面）。
         """
         self.root_dir = Path(root_dir) if root_dir else None
         # 模板库随记忆一起持久化：树按 template_id 落盘，库若不同步恢复，
@@ -79,7 +85,11 @@ class EvoTreeMemory:
         )
         self.forest = ExperienceForest(root_dir=self.root_dir)
         self.notes = self._load_notes()
-        self.retriever = Retriever(gamma=gamma, ucb_c=ucb_c, top_k=top_k)
+        if explore is None:
+            explore = write_enabled
+        self.retriever = Retriever(
+            gamma=gamma, ucb_c=ucb_c, top_k=top_k, explore=explore
+        )
         self.write_enabled = write_enabled
 
     # ------------------------------------------------------------------ #

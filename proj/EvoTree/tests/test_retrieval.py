@@ -95,6 +95,111 @@ class TestUnexploredEdgesSurvive:
         assert _names(recs) == ["os.never_tried"]
 
 
+class TestShakyEdgesExcluded:
+    """薄硬币边不进推荐栏（实验二 2026-09-11 的实测教训）。
+
+    ``CTRL+ALT+T（2次·成功率0.50·低置信）`` 当时被当成经验推给模型，
+    agent 照做烧掉步数。低置信标注只提醒证据不足，拦不住进榜，
+    所以准入层面要一票否决。
+    """
+
+    def test_thin_coinflip_not_recommended(self):
+        # 1败1成 → n=2、p=0.50：val>0 不算死边，但薄而弱 → 拦
+        tree, node_id = _tree_with(
+            [("computer_use.key", True), ("computer_use.key", False)]
+        )
+        assert Retriever()._build_recommendations(tree, node_id, 2) == []
+
+    def test_thin_but_spotless_still_recommended(self):
+        # 2/2 全胜 → 薄但 p=1.0，是证据不是噪声 → 放行
+        tree, node_id = _tree_with([("os.copy", True), ("os.copy", True)])
+        assert _names(Retriever()._build_recommendations(tree, node_id, 2)) == [
+            "os.copy"
+        ]
+
+    def test_thick_but_weak_survives_ranking(self):
+        # n≥3 的平庸边不拦（证据充分，排序自然靠后），拦了反而丢真实信号
+        outcomes = [("os.thick", False)] * 3 + [("os.thick", True)] * 3
+        outcomes += [("os.good", True)]
+        tree, node_id = _tree_with(outcomes)
+        # os.thick 进了推荐栏（只被排序压后，没有被门槛拦掉）
+        assert "os.thick" in _names(
+            Retriever()._build_recommendations(tree, node_id, 7)
+        )
+
+
+class TestFrozenTurnsOffExploration:
+    """explore=False（冻结评测接线 write_enabled=False）时的两条语义。"""
+
+    def _two_roads(self) -> tuple[ExperienceTree, str]:
+        """两条路：厚而稳（8/8 成，还差1步）与 薄而远（1/1 成，还差5步）。"""
+        tree = ExperienceTree(template_id="t")
+        node = tree.get_or_create_node(SIG)
+        solid = tree.get_or_create_edge(
+            node.node_id, ActionTmpl(ActionKind.TOOL, "os.solid")
+        )
+        solid.n = 8
+        solid.n_success = 8
+        solid.steps_after_success = [1] * 8
+        lucky = tree.get_or_create_edge(
+            node.node_id, ActionTmpl(ActionKind.TOOL, "os.lucky")
+        )
+        lucky.n = 1
+        lucky.n_success = 1
+        lucky.steps_after_success = [5]
+        return tree, node.node_id
+
+    def test_frozen_ranks_by_value_not_ucb(self):
+        # state_visits=50 时 UCB 项让薄路反超厚路；frozen 关探索后按价值排
+        tree, node_id = self._two_roads()
+        online = Retriever()
+        assert _names(
+            online._build_recommendations(tree, node_id, state_visits=50)
+        ) == ["os.lucky", "os.solid"]
+        frozen = Retriever(explore=False)
+        assert _names(
+            frozen._build_recommendations(tree, node_id, state_visits=50)
+        ) == ["os.solid", "os.lucky"]
+
+    def test_frozen_drops_unexplored_edges(self):
+        # n=0 的边在 frozen 下渲染成 "0次·成功率0.00" 是纯噪声 —— 不进榜
+        tree, node_id = _tree_with([("os.copy", True)])
+        tree.get_or_create_edge(
+            node_id, ActionTmpl(ActionKind.TOOL, "os.never_tried")
+        )
+        frozen = Retriever(explore=False)
+        assert _names(
+            frozen._build_recommendations(tree, node_id, state_visits=2)
+        ) == ["os.copy"]
+        # 对照：探索开着时未探索边照样露脸（UCB=inf 排最前）
+        online = Retriever()
+        assert _names(
+            online._build_recommendations(tree, node_id, state_visits=2)
+        ) == ["os.never_tried", "os.copy"]
+
+
+class TestMemoryWiresExploreToWriteEnabled:
+    """EvoTreeMemory 默认 explore=write_enabled：冻结评测不用改调用方。"""
+
+    def test_frozen_memory_disables_exploration(self):
+        from evotree.memory import EvoTreeMemory
+
+        assert EvoTreeMemory(write_enabled=False).retriever.explore is False
+
+    def test_online_memory_keeps_exploration(self):
+        from evotree.memory import EvoTreeMemory
+
+        assert EvoTreeMemory(write_enabled=True).retriever.explore is True
+
+    def test_explicit_explore_override_wins(self):
+        from evotree.memory import EvoTreeMemory
+
+        assert (
+            EvoTreeMemory(write_enabled=False, explore=True).retriever.explore
+            is True
+        )
+
+
 class TestSheetIntegration:
     def test_experience_section_absent_when_every_edge_is_dead(self):
         # 端到端：推荐栏空 → 小抄里不应出现 [经验] 整段
