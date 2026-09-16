@@ -1,0 +1,986 @@
+<title>状态该怎么表示</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&family=Noto+Serif+SC:wght@400;500;600&display=swap">
+<style>
+:root{
+  --paper:#f5f4f2; --surface:#fff; --surface-2:#eceae6; --surface-3:#e2dfd9;
+  --ink:#1e1c1a; --ink-2:#423e39; --muted:#736d64;
+  --rule:#dbd7d0; --rule-strong:#bfb9ae;
+  --good:#2d6a4f; --good-bg:#e4efe8;
+  --bad:#a63d33; --bad-bg:#f8e9e6;
+  --warn:#8a6614; --warn-bg:#f7efd9;
+  --accent:#2c4f6b; --accent-bg:#e5edf3;
+  --cite:#5a4b7a; --cite-bg:#ece7f3;
+  --sans:"IBM Plex Sans","Noto Sans SC",system-ui,sans-serif;
+  --mono:"IBM Plex Mono",SFMono-Regular,Consolas,monospace;
+  --serif:"Noto Serif SC","IBM Plex Sans",Georgia,serif;
+  --measure:70ch;
+}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
+  --paper:#17161a; --surface:#1e1d22; --surface-2:#26252b; --surface-3:#2e2d35;
+  --ink:#eae8e4; --ink-2:#c5c1ba; --muted:#8e887f;
+  --rule:#312f37; --rule-strong:#454250;
+  --good:#63b48c; --good-bg:#15291f;
+  --bad:#d9776a; --bad-bg:#2e1a17;
+  --warn:#c9a34a; --warn-bg:#2c2410;
+  --accent:#82aecb; --accent-bg:#17232d;
+  --cite:#a794cf; --cite-bg:#221d2e;
+}}
+:root[data-theme="dark"]{
+  --paper:#17161a; --surface:#1e1d22; --surface-2:#26252b; --surface-3:#2e2d35;
+  --ink:#eae8e4; --ink-2:#c5c1ba; --muted:#8e887f;
+  --rule:#312f37; --rule-strong:#454250;
+  --good:#63b48c; --good-bg:#15291f;
+  --bad:#d9776a; --bad-bg:#2e1a17;
+  --warn:#c9a34a; --warn-bg:#2c2410;
+  --accent:#82aecb; --accent-bg:#17232d;
+  --cite:#a794cf; --cite-bg:#221d2e;
+}
+*{box-sizing:border-box}
+body{background:var(--paper);color:var(--ink);font-family:var(--sans);
+  font-size:16px;line-height:1.6;-webkit-font-smoothing:antialiased}
+.wrap{max-width:1140px;margin:0 auto;padding:0 26px 96px}
+.col{max-width:var(--measure)}
+p{margin:0 0 1.05em}
+.serif{font-family:var(--serif);color:var(--ink-2);line-height:1.85}
+strong,b{font-weight:600;color:var(--ink)}
+code{font-family:var(--mono);font-size:.87em;background:var(--surface-2);
+  padding:.1em .36em;border-radius:3px}
+a{color:var(--accent)}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+
+header.mast{border-bottom:2px solid var(--ink);margin-bottom:44px;padding:54px 0 26px}
+.eyebrow{font-family:var(--mono);font-size:11.5px;letter-spacing:.14em;
+  text-transform:uppercase;color:var(--muted);margin-bottom:20px}
+h1{font-size:clamp(32px,4.8vw,52px);line-height:1.06;margin:0 0 22px;font-weight:600;
+  letter-spacing:-.022em;text-wrap:balance;max-width:18ch}
+.standfirst{font-family:var(--serif);font-size:18.5px;line-height:1.72;color:var(--ink-2);
+  max-width:62ch;margin:0 0 30px}
+.facts{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));
+  gap:1px;background:var(--rule);border:1px solid var(--rule)}
+.fact{background:var(--surface);padding:12px 15px}
+.fact dt{font-family:var(--mono);font-size:10.5px;letter-spacing:.1em;
+  text-transform:uppercase;color:var(--muted);margin-bottom:5px}
+.fact dd{margin:0;font-family:var(--mono);font-size:14px;font-weight:500}
+
+section{margin:62px 0 0;scroll-margin-top:16px}
+.sec-head{display:flex;align-items:baseline;gap:13px;
+  border-bottom:1px solid var(--rule-strong);padding-bottom:10px;margin-bottom:24px}
+.sec-num{font-family:var(--mono);font-size:12px;color:var(--muted);flex:none;padding-top:3px}
+h2{font-size:25px;font-weight:600;margin:0;letter-spacing:-.014em;line-height:1.25}
+h3{font-size:17px;font-weight:600;margin:34px 0 12px}
+h4{font-size:14.5px;font-weight:600;margin:22px 0 9px;color:var(--ink-2)}
+.pane-label{font-family:var(--mono);font-size:10.5px;letter-spacing:.1em;
+  text-transform:uppercase;color:var(--muted);margin-bottom:10px}
+
+blockquote{margin:16px 0;padding:14px 18px;background:var(--surface);
+  border-left:3px solid var(--cite);font-family:var(--serif);font-size:14.5px;
+  line-height:1.75;color:var(--ink-2)}
+blockquote.en{font-family:var(--sans);font-size:14px;line-height:1.7}
+blockquote p:last-child{margin-bottom:0}
+.src{display:inline-block;font-family:var(--mono);font-size:10.5px;
+  color:var(--cite);background:var(--cite-bg);padding:2px 7px;border-radius:3px;
+  margin-top:9px;letter-spacing:.02em}
+.src.unver{color:var(--warn);background:var(--warn-bg)}
+
+.tscroll{overflow-x:auto;margin:18px 0;border:1px solid var(--rule);background:var(--surface)}
+table{border-collapse:collapse;width:100%;font-size:13.5px}
+th,td{text-align:left;padding:9px 13px;border-bottom:1px solid var(--rule);white-space:nowrap}
+thead th{font-family:var(--mono);font-size:10.5px;letter-spacing:.09em;text-transform:uppercase;
+  color:var(--muted);font-weight:500;background:var(--surface-2);
+  border-bottom:1px solid var(--rule-strong)}
+tbody tr:last-child td{border-bottom:none}
+.tl{white-space:normal;min-width:170px}
+.num{font-family:var(--mono);font-variant-numeric:tabular-nums;text-align:right}
+.no{color:var(--bad);font-weight:600}
+.yes{color:var(--good);font-weight:600}
+
+.callout{border:1px solid var(--rule);border-left:3px solid var(--accent);
+  background:var(--accent-bg);padding:16px 20px;margin:22px 0}
+.callout.warnc{border-left-color:var(--warn);background:var(--warn-bg)}
+.callout.badc{border-left-color:var(--bad);background:var(--bad-bg)}
+.callout.goodc{border-left-color:var(--good);background:var(--good-bg)}
+.callout p:last-child{margin-bottom:0}
+.callout .lbl{font-family:var(--mono);font-size:10.5px;letter-spacing:.11em;
+  text-transform:uppercase;color:var(--muted);display:block;margin-bottom:7px}
+ul.plain{padding-left:19px;margin:0 0 1.05em}
+ul.plain li{margin-bottom:9px;color:var(--ink-2)}
+
+.evbox{border:1px solid var(--rule);background:var(--surface);margin:22px 0}
+.evbox-head{padding:12px 19px;background:var(--surface-2);
+  border-bottom:1px solid var(--rule);display:flex;flex-wrap:wrap;gap:11px;align-items:baseline}
+.evbox-title{font-weight:600;font-size:15px}
+.evbox-sub{font-family:var(--mono);font-size:11.5px;color:var(--muted)}
+.evbox-body{padding:18px 19px}
+.code{font-family:var(--mono);font-size:12px;line-height:1.65;white-space:pre;
+  overflow-x:auto;background:var(--surface-2);padding:13px 15px;margin:12px 0}
+.hi{color:var(--bad);font-weight:600}
+.hi2{color:var(--good);font-weight:600}
+
+.opts{display:grid;gap:14px;margin:22px 0}
+@media(min-width:820px){.opts{grid-template-columns:1fr 1fr}}
+.opt{border:1px solid var(--rule);background:var(--surface);padding:17px 19px}
+.opt.strong{border-left:3px solid var(--good)}
+.opt.mid{border-left:3px solid var(--accent)}
+.opt.weak{border-left:3px solid var(--rule-strong)}
+.opt h4{margin:0 0 6px;font-size:15px}
+.opt .tag{font-family:var(--mono);font-size:10px;letter-spacing:.09em;text-transform:uppercase;
+  padding:2px 7px;border-radius:3px;margin-left:7px;font-weight:500}
+.tag.ev-strong{color:var(--good);background:var(--good-bg)}
+.tag.ev-mid{color:var(--accent);background:var(--accent-bg)}
+.tag.ev-weak{color:var(--muted);background:var(--surface-3)}
+.opt p{font-size:14px;line-height:1.65;color:var(--ink-2);margin:0 0 9px}
+.opt .tradeoff{font-size:13px;color:var(--muted);border-top:1px solid var(--rule);
+  padding-top:9px;margin-top:11px}
+
+footer{margin-top:76px;padding-top:22px;border-top:1px solid var(--rule);
+  font-family:var(--mono);font-size:11.5px;color:var(--muted);line-height:1.8}
+footer a{color:var(--muted)}
+</style>
+
+<div class="wrap">
+
+<header class="mast">
+  <div class="eyebrow">EvoTree · 文献调研 · 2026-09-10</div>
+  <h1>状态该怎么表示：一次文献核查</h1>
+  <p class="standfirst">
+    我原本以为的结论是「几乎没人用离散状态键」。<b>这个结论是错的，而且错得离谱。</b>
+    四路并行查完 60 余篇后：DroidBot / AutoDroid / ActionEngine / EAM / UI-KOBE / ScreenSearch
+    都在做「节点=离散状态、边=动作、跨任务复用」的图——<b>这是一个热闹的子领域，不是无人区</b>。
+    真正没有先例的是<b>手工设计的固定三元组</b>：这批工作全都已经从「精确元组匹配」走向了「嵌入召回 + 模型验证」的两段式。
+  </p>
+  <dl class="facts">
+    <div class="fact"><dt>核查论文</dt><dd>60+ 篇</dd></div>
+    <div class="fact"><dt>做状态图的先例</dt><dd style="color:var(--good)">6 个以上</dd></div>
+    <div class="fact"><dt>用手工固定元组的</dt><dd style="color:var(--bad)">只有早期</dd></div>
+    <div class="fact"><dt>结论</dt><dd>方向对·实现旧</dd></div>
+  </dl>
+</header>
+
+<!-- ===== 1 ===== -->
+<section id="s1">
+  <div class="sec-head"><span class="sec-num">01</span><h2>我们的问题，先说清楚</h2></div>
+  <div class="col">
+    <p class="serif">EvoTree 把「agent 现在处于什么局面」压缩成一个三元组，两个三元组相等就认为是同一个局面、树上的同一个点：</p>
+  </div>
+  <div class="code">StateSig(app: str, window: str, dialog: Optional[str])
+   例：("Gnome-control-center", "Settings", None)</div>
+  <div class="col">
+    <p class="serif">三轮实验实测出三个毛病，<b>而且方向相反</b>：</p>
+    <ul class="plain">
+      <li><b>太粗</b>——GNOME 系统菜单开着 / 关着，φ 完全相同。<code>fe41f596</code> 花了 8 步中的 2 步只为关掉一个挡住视线的菜单，树里看不见这件事</li>
+      <li><b>太细</b>——Nautilus 搜索框把 agent 自己输入的查询串带进了窗口标题（<code>window='Search for "cp file1 dir1 dir2 dir3"'</code>），换个查询就是新节点，树碎掉</li>
+      <li><b>维度残缺</b>——<code>dialog</code> 恒为 <code>None</code>，因为我们跑 <code>--observation_type screenshot</code>，从不采集 a11y 树</li>
+    </ul>
+    <p class="serif">
+      更根本的是<b>双模态</b>：我们的 agent 每步在 GUI 动作（<code>pyautogui.click</code>，无返回值）和 CLI/工具调用（<code>os.open_shell</code>，有返回值）之间二选一。
+      而 φ 只描述屏幕——终端任务里「已复制 0 个文件 → 已复制 3 个」这样的状态变化，<b>φ 完全看不见</b>。
+    </p>
+  </div>
+</section>
+
+<!-- ===== 2 ===== -->
+<section id="s2">
+  <div class="sec-head"><span class="sec-num">02</span><h2>核心答案：一半对，一半错</h2></div>
+  <div class="col">
+    <p class="serif">
+      我一开始的判断是「几乎没人用离散状态键」。<b>查完之后必须收回。</b>
+      在<b>双模态</b>（GUI+工具）这个窄切面上确实没有；但只要放宽到 GUI agent，
+      离散状态图是个<b>正在活跃的子领域</b>，而且有几个做得比我们彻底得多。
+    </p>
+  </div>
+
+  <div class="tscroll">
+    <table>
+      <thead><tr><th class="tl">系统</th><th class="tl">状态是什么</th><th class="tl">工具返回值算状态吗</th><th class="tl">跨轮记忆</th></tr></thead>
+      <tbody>
+        <tr><td class="tl"><b>ToolCUA</b> 2605.12481</td><td class="tl">连续多模态观测</td><td class="tl yes">算，写进 MDP 定义</td><td class="tl no">无 —— 学习在权重里</td></tr>
+        <tr><td class="tl"><b>UltraCUA</b> 2510.17790</td><td class="tl">自然语言 <code>&lt;memory&gt;</code> 块</td><td class="tl yes">算（"中间结果"）</td><td class="tl no">无 —— 仅上下文内</td></tr>
+        <tr><td class="tl"><b>CoAct-1</b> 2508.03923</td><td class="tl">执行器摘要 + 截图</td><td class="tl yes">算</td><td class="tl no">无 —— 每子任务清空</td></tr>
+        <tr><td class="tl"><b>OS-Symphony</b> 2601.07779</td><td class="tl">步骤摘要 + 里程碑截图</td><td class="tl yes">算</td><td class="tl no">无 —— 仅回合内</td></tr>
+        <tr><td class="tl"><b>Agent-S / S2 / S3</b></td><td class="tl">自然语言叙述</td><td class="tl">—</td><td class="tl">有，但<b>按任务索引</b></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>真正的先例：一批和我们做同一件事的工作</h3>
+  <div class="tscroll">
+    <table>
+      <thead><tr><th class="tl">系统</th><th class="tl">状态键是什么</th><th class="tl">怎么判「同一个状态」</th><th class="tl">规模</th></tr></thead>
+      <tbody>
+        <tr><td class="tl"><b>DroidBot</b> → <b>AutoDroid</b><br><span class="evbox-sub">MobiCom'24</span></td>
+          <td class="tl"><code>md5(activity + sorted(控件签名集合))</code></td>
+          <td class="tl">哈希精确相等</td>
+          <td class="tl">158 个任务复用同一张图</td></tr>
+        <tr><td class="tl"><b>ActionEngine</b></td>
+          <td class="tl">页面的「原子」集合（结构签名）</td>
+          <td class="tl">结构签名相同即同一状态</td>
+          <td class="tl">Reddit 约 20–30 状态 / 100–150 转移</td></tr>
+        <tr><td class="tl"><b>UI-KOBE</b></td>
+          <td class="tl">页面语义描述的嵌入</td>
+          <td class="tl">嵌入阈值 <b>+ 截图级 VLM 验证</b></td>
+          <td class="tl">每 app 均 54 节点 / 226 边，建一次反复用</td></tr>
+        <tr><td class="tl"><b>EAM</b></td>
+          <td class="tl">状态节点 + 动作节点的有向图</td>
+          <td class="tl">嵌入粗筛 <b>+ VLM 细验</b> + 元素 IoU</td>
+          <td class="tl">AndroidWorld 52.6%</td></tr>
+        <tr><td class="tl"><b>ScreenSearch</b></td>
+          <td class="tl">控件/文本原子集合的 Jaccard</td>
+          <td class="tl">阈值 0.93，<b>相似度只能召回不能合并</b></td>
+          <td class="tl">100 万截图 → 3.1 万状态</td></tr>
+        <tr><td class="tl"><b>GiGPO</b><br><span class="evbox-sub">NeurIPS 2025</span></td>
+          <td class="tl">观测的结构化哈希</td>
+          <td class="tl">精确哈希（可选 0.9 相似度回退）</td>
+          <td class="tl">实测 <b>&gt;65% 的状态会重现</b></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="callout badc col">
+    <span class="lbl">这改变了我们的定位</span>
+    <p>「节点是离散状态而不是轨迹」<b>不能当作新意来讲</b>——DroidBot 2023 年就这么做了。</p>
+    <p style="margin-top:9px">而且要注意这批工作的<b>演进方向</b>：DroidBot 用精确哈希 → EAM/UI-KOBE 改成「嵌入召回 + 模型验证」两段式。
+    <b>他们从精确元组走开，正是因为元组既会过度合并、又会过度分裂</b>——就是我们现在遇到的两个病。</p>
+    <p style="margin-top:9px">真正还没人做的，是<b>「跨任务持久图 + 边上同时挂成功率和 cost-to-go + 真实桌面环境」这个组合</b>。
+    ScreenSearch 有边级统计但只做探索不管任务成败；EAM 有 Q 函数但在 Android；GATS 两样都有但只在合成环境跑过。</p>
+  </div>
+
+  <div class="callout goodc col">
+    <span class="lbl">一个可以直接抄的数字</span>
+    <p>GiGPO 在 ALFWorld 上实测：<b>超过 65% 的状态会在不同轨迹间重现</b>。这是「状态复用值不值得做」的直接证据，
+    也给了我们一个该测的指标——<b>我们的树里状态重现率是多少？</b>如果远低于 65%，说明签名太细了。</p>
+  </div>
+
+  <h3>SWE-agent 有一个几乎一样的状态元组</h3>
+  <div class="col">
+    <p class="serif">
+      这是三路调研里最推翻我预期的一条。SWE-agent（解 GitHub issue 的 agent）每一步都往 <code>/root/state.json</code> 写一个二元组，
+      然后注入进每一次观测：
+    </p>
+  </div>
+  <div class="code">state["open_file"]     当前打开的文件
+state["working_dir"]   当前工作目录
+
+模板注入：(Open file: {{open_file}})
+          (Current directory: {{working_dir}})</div>
+  <div class="col">
+    <p class="serif">
+      <b>这就是 φ，只是维度不同。</b>而且细节上有两点值得抄：空值用 <code>"n/a"</code> 哨兵而不是 <code>None</code>；
+      每步用 <code>state_commands</code> 重算，不缓存。
+    </p>
+  </div>
+
+  <div class="callout goodc col">
+    <span class="lbl">关键差别，也是我们真正的错误</span>
+    <p><b>SWE-agent 是向环境「查询」状态，我们是从屏幕「解析」状态。</b></p>
+    <p style="margin-top:9px">
+      它执行一条 shell 命令拿到 <code>pwd</code> 和当前文件——<b>精确、廉价、无歧义</b>。
+      我们从窗口标题里正则匹配——于是 Nautilus 把搜索查询串塞进标题时，我们的状态就碎了。
+    </p>
+    <p style="margin-top:9px">
+      而我们<b>有 shell 权限</b>（<code>os.open_shell</code>）。<code>pwd</code>、文件数、进程状态都是可以直接问出来的，
+      不必从像素里猜。
+    </p>
+  </div>
+
+  <div class="evbox">
+    <div class="evbox-head">
+      <span class="evbox-title">而且它测过「全历史 vs 重算状态」</span>
+      <span class="evbox-sub">SWE-agent Table 3 消融</span>
+    </div>
+    <div class="evbox-body">
+      <div class="code">Full history      15.0
+Last 5 Obs.       <span class="hi2">18.0</span>   ← 丢掉历史、每步重算状态，反而更好</div>
+      <p style="margin-bottom:0">
+        这是文献里唯一一个直接比较「把历史当状态」和「重算状态」的数字，<b>而且重算赢了 3 个点</b>。
+      </p>
+    </div>
+  </div>
+
+  <h3>但工具返回值属于状态，这条是共识</h3>
+  <div class="col">
+    <p class="serif">ToolCUA 把它直接写进了 MDP 的形式化定义里（本地 <code>ref/toolcua</code> 有源码，与已发表版本一致）：</p>
+  </div>
+  <blockquote class="en">
+    At each time step <i>t</i>, the state <i>s<sub>t</sub></i> ∈ <i>S</i> denotes a multimodal observation
+    encompassing both the desktop screenshot <b>and previously invoked tool results</b>.
+    The agent interacts with the environment through a hybrid action space <i>A</i> = <i>A<sub>GUI</sub></i> ∪ <i>A<sub>Tool</sub></i>
+    <span class="src">[已核实] arxiv.org/html/2605.12481 §2.1</span>
+  </blockquote>
+  <div class="col">
+    <p class="serif">
+      注意这里的<b>不对称</b>：<b>动作</b>空间被拆成两个子空间，<b>状态</b>空间没有拆——一个 <i>s<sub>t</sub></i> 同时承载屏幕和工具历史。
+    </p>
+    <p class="serif">
+      按这个形式化，我们树里「工具边和 GUI 边挂在同一个 φ 节点上」<b>是对的</b>。错的是 φ 只覆盖了屏幕那一半。
+    </p>
+  </div>
+
+  <div class="evbox">
+    <div class="evbox-head">
+      <span class="evbox-title">唯一的量化证据，而且很弱</span>
+      <span class="evbox-sub">UltraCUA Table 6 消融</span>
+    </div>
+    <div class="evbox-body">
+      <p style="margin-bottom:12px">UltraCUA 用自然语言维护「进度」，作者说它对「跨动作模态切换」的场景很关键：</p>
+      <blockquote class="en" style="margin-top:0">
+        This mechanism proves crucial for multi-step tasks requiring information persistence
+        <b>across action modality switches</b>.
+        <span class="src">[已核实] arxiv.org/html/2510.17790 §2.3.2</span>
+      </blockquote>
+      <div class="code">开启 working memory   成功率 27.0%   平均 8.46 步
+关闭 working memory   成功率 25.4%   平均 8.56 步</div>
+      <p style="margin-bottom:0"><b>作者自己称这个增益 "modest"（不大）。</b>这是我们能找到的关于「混合模态进度状态」的<b>唯一</b>量化数据，而且是自由文本形式，不是离散键。</p>
+    </div>
+  </div>
+
+  <div class="callout warnc col">
+    <span class="lbl">一个反直觉的警告</span>
+    <p>ToolCUA 实测：<b>粗暴地把两种动作空间都摆出来会让效果变差</b>。Qwen3VL-235B 加了工具后，平均每条轨迹调用 6.10 次工具，准确率反而从 41.14% 掉到 38.14%。而它们训练出的最好模型平均只调用 <b>0.74 次</b>工具，准确率 46.8%。</p>
+    <p><b>少而准的工具调用胜过多而滥。</b>这对我们的推荐栏有直接含义：推荐工具动作本身不是好事。</p>
+  </div>
+</section>
+
+<!-- ===== 3 ===== -->
+<section id="s3">
+  <div class="sec-head"><span class="sec-num">03</span><h2>但我们的问题有人解过 —— 在另外两个领域</h2></div>
+
+  <h3>LASER：状态等价该按「结构」而不是「内容」</h3>
+  <div class="col">
+    <p class="serif">
+      LASER 是把网页导航建模成状态空间探索的工作。它对「两个观测什么时候算同一个状态」给了一句极其干净的判据：
+    </p>
+  </div>
+  <blockquote class="en">
+    we consider an agent to be in two different states <b>only if the structure of the current environment
+    observation is different</b>. This allows us to define only a handful of states to support an agent's
+    exploration in a complex environment fully.
+    <span class="src">[已核实] arxiv.org/html/2309.08172 §2.3</span>
+  </blockquote>
+  <div class="col">
+    <p class="serif">
+      整个 WebShop 域<b>只用了 4 个状态</b>，每个状态配一套专属的可用动作集。
+    </p>
+    <p class="serif">
+      <b>这条判据同时治我们两个方向相反的病</b>：
+    </p>
+    <ul class="plain">
+      <li>Nautilus 搜索框换个查询串 → <b>结构没变</b>（还是「搜索结果页」）→ 同一个状态 → 治「太细」</li>
+      <li>菜单开着 / 关着 → <b>结构变了</b>（多了一个浮层）→ 不同状态 → 治「太粗」</li>
+    </ul>
+    <p class="serif">
+      代价是论文自己承认的：状态要<b>手工枚举</b>，「might only be suitable for building agents for specific
+      domains rather than open-world web agents」。
+    </p>
+  </div>
+
+  <h3>Android GUI 测试：APE 把我们三个毛病写在同一段里</h3>
+  <div class="col">
+    <p class="serif">
+      这是本次调研最有价值的发现。APE 是一篇 Android 自动化测试的论文，它要给 app 建一个状态模型来指导探索——<b>和我们建经验树是同一个工程问题</b>。
+      它对「粗细两难」的描述，几乎是逐字命中我们的处境：
+    </p>
+  </div>
+  <blockquote class="en">
+    First, if the model is <b>overly fine-grained</b>, the testing tool cannot systematically explore the model
+    due to <b>state explosion</b>. Second, if the model is <b>overly coarse-grained</b>, the testing tool cannot
+    gather sufficiently accurate knowledge... an ineffective abstraction may map multiple GUI actions with
+    <b>different behaviors (e.g., leading to different target states) to the same model action</b>.
+    <span class="src">[已核实] rh_research_ape.txt §I</span>
+  </blockquote>
+  <div class="col">
+    <p class="serif">
+      它举的例子<b>就是我们的 Nautilus 问题</b>：一个文件列表界面，把文件名放进状态签名会导致状态爆炸，不放进去又会把行为不同的动作合并成一个。
+    </p>
+  </div>
+
+  <h4>它给出的检测信号，我们的数据里已经有了</h4>
+  <blockquote class="en">
+    a state transition (S, α, S′) is <b>non-deterministic</b> if there is another transition (S, α, S″), where S′ ≠ S″.
+    Such a pair of non-deterministic transitions usually indicates that the abstraction of the source state S
+    or the model action α is <b>overly coarse and needs to be refined</b>.
+    <span class="src">[已核实] rh_research_ape.txt §III</span>
+  </blockquote>
+
+  <div class="callout goodc col">
+    <span class="lbl">这条可以直接用</span>
+    <p>翻译成我们的话：<b>同一个状态、同一个动作，有时成功有时失败 → 这个状态被合并得太粗了，该拆。</b></p>
+    <p>而这个信号<b>我们已经在采集了</b>——就是 <code>p</code> 落在 0 和 1 之间的那些边。不需要猜该加哪些维度，数据会告诉我们哪个节点该拆。</p>
+  </div>
+
+  <div class="evbox">
+    <div class="evbox-head">
+      <span class="evbox-title">在我们 pass3 的树里跑一遍这个判据</span>
+      <span class="evbox-sub">22 条边，3 条命中</span>
+    </div>
+    <div class="evbox-body">
+      <div class="code">### Recursively_go_through_the_folders
+   s0  --os.open_shell            n=4  p=0.25  to_succ=s2  to_fail=s0   <span class="hi">← 非确定性</span>
+   s0  --computer_use.key         n=2  p=0.50  to_succ=s0  to_fail=s0   <span class="hi">← 非确定性</span>
+
+### Copies_file__arg0__to_each_of_directories
+   s0  --computer_use.type        n=7  p=0.43  to_succ=s6  to_fail=s0   <span class="hi">← 非确定性</span></div>
+      <p style="margin-bottom:0">
+        这三条边正是<b>三轮实验里第一次出现的中间 p 值</b>。当时我把它们当作「三轮成功拉开了 p 值」的好消息报给你——
+        按 APE 的判据，它们同时也是<b>「s0 这个节点被合并得太粗」的报警</b>。
+        注意 <code>s0</code> 的签名是 <code>(unknown, '', None)</code>——三个字段全空的那个节点。
+      </p>
+    </div>
+  </div>
+
+  <div class="col">
+    <p class="serif">
+      APE 的完整算法还包括防止拆过头的机制：如果一次细化让一个状态裂成超过 δ 个新状态（默认 8），就回退。
+      实测在 1316 个 app 上覆盖率相对提升 14–78%，发现 61 个独特崩溃（对照组 31–44 个）。
+    </p>
+  </div>
+
+  <h3>取值型工具调用该建模成「自环边」</h3>
+  <div class="col">
+    <p class="serif">
+      这条正面回答了我们的双模态问题。ActionEngine 把两类操作分开处理：
+    </p>
+  </div>
+  <blockquote class="en">
+    UI Manipulation Operations typically induce a transition to a new state, whereas
+    <b>Data Collection Operations introduces self-loops because they do not change the agent's state
+    in the graph</b>. Instead of triggering a state transition, these operations extract information
+    from the UI and <b>store it in symbolic variables</b> that can be referenced in the online execution stage.
+    <span class="src">[已核实] arXiv 2602.20502 §3.1</span>
+  </blockquote>
+  <div class="col">
+    <p class="serif">
+      对我们的直接含义：<code>os.get_volume</code>、<code>os.get_text_scale</code> 这类<b>只读取不改变</b>的工具调用，
+      不该被当成普通的状态转移边——它们是<b>自环边</b>，作用是往符号变量里绑值。
+    </p>
+    <p class="serif">
+      而 <code>os.set_volume</code>、<code>os.copy_matching_files</code> 这类<b>会改变系统状态</b>的调用才是真正的转移边。
+      我们现在把两者混在一起，所以「查了一下音量」和「改了音量」在树里长得一样。
+    </p>
+  </div>
+
+  <h3>Stoat 的归一化规则：2017 年就写好了我们要的那条</h3>
+  <blockquote class="en">
+    (2) minor UI information, e.g., <b>text changes (e.g., the contents of TextViews/EditTexts)</b> and
+    UI property changes, <b>is omitted without creating new states</b>;
+    (3) <b>ListViews are only differentiated as empty and non-empty.</b>
+    <span class="src">[已核实] Stoat, FSE 2017</span>
+  </blockquote>
+  <div class="col">
+    <p class="serif">
+      第 (2) 条<b>就是我们的 Nautilus 修复</b>——输入框里的内容不进状态签名。
+      第 (3) 条是处理变长列表的标准答案：<b>把集合压成「空 / 非空」这样的有界类别</b>，而不是去哈希内容。
+    </p>
+    <p class="serif">
+      这两条规则比我们的 <code>normalize_window</code> 正则简单得多，也稳健得多。
+    </p>
+  </div>
+
+  <h3>DroidBot：同时维护两个粒度的键</h3>
+  <div class="col">
+    <p class="serif">
+      这是最直接可抄的工程做法。DroidBot 对每个界面<b>同时算两个键</b>：
+    </p>
+  </div>
+  <div class="code">self.state_str      = 内容敏感   ← 含 text / enabled / checked / selected
+self.structure_str  = 内容无关   ← 只含 class + resource_id</div>
+  <div class="col">
+    <p class="serif">
+      粗键把 Nautilus 所有搜索结果页<b>塌成同一个节点</b>（不管查询串是什么），细键在行为真的分叉时才用来区分。
+    </p>
+    <p class="serif">
+      还有一个观察值得注意：它的键是<b>控件签名的有序集合</b>。集合天然有序无关、天然去重，而且——<b>弹窗只是多了几个控件，不需要单独的 dialog 字段</b>。
+      按这个思路，我们那个死掉的第三维不是要「补上」，而是<b>要取消</b>。
+    </p>
+  </div>
+
+  <div class="callout warnc col">
+    <span class="lbl">一个反面教材</span>
+    <p>AutoDroid 在 DroidBot 基础上用一串正则做归一化。调研核实了它的实际代码，<b>是有 bug 的</b>：漏了个逗号让 <code>'Dec' 'January'</code> 拼成 <code>'DecJanuary'</code>；没加锚点的正则把 <code>"Satisfied"</code> 变成 <code>"isfied"</code>；含 <code>:</code> 或 <code>%</code> 的字符串直接被清空；而 <code>'[0-9]+'</code> 那条被注释掉了——<b>他们试过全剥数字，然后退回来了</b>。</p>
+    <p style="margin-top:9px">这就是「不断加正则」这条路的终点。我们的 <code>normalize_window</code> 正走在同一条路上。</p>
+  </div>
+
+  <h3>最反直觉的一条：像我们这样的系统，应该要<b>更粗</b>的状态</h3>
+  <div class="col">
+    <p class="serif">
+      有一篇实证研究把网页语料<b>固定住</b>，只换状态抽象函数，看能产生多少个状态：
+    </p>
+  </div>
+  <div class="code">同一批页面，六种抽象函数：
+  StrCmp      1756 个状态   ← 最细
+  RTED         268
+  PDiff         65
+  Judge        154
+  WebEmbed      10
+  Gestalt       <span class="hi2">18</span>   ← 最粗
+
+同样的页面，状态数差 <span class="hi">近百倍</span>，纯粹取决于抽象函数怎么选。</div>
+  <div class="col">
+    <p class="serif">而它的核心结论，对我们是当头一棒：</p>
+  </div>
+  <blockquote class="en">
+    <b>Strict and fine-grained abstractions benefit model-based approaches, whereas compact abstractions
+    enhance the stability of RL-based approaches.</b>
+    <span class="src">[已核实] arXiv 2606.16650 §5</span>
+  </blockquote>
+  <div class="col">
+    <p class="serif">
+      原因它也讲了：细粒度状态会让每个状态<b>拿不到足够的访问次数</b>，Q 值更新不稳定，
+      基于 RL 的方法「degenerates toward nearly random exploration」——退化成近乎随机探索。
+    </p>
+    <p class="serif">
+      <b>EvoTree 的边上挂着成功率和 cost-to-go，我们就是那个「价值学习」的消费者。</b>
+      这意味着我们一直以来的直觉——「状态太粗了，要加维度」——<b>可能是反的</b>。
+    </p>
+    <p class="serif">
+      对照我们的实际数据：22 条边，n 最大才 13，一半以上的边 n≤2。<b>我们的问题很可能不是状态不够细，
+      而是每个状态的样本本来就不够。</b>再加维度只会让样本更稀。
+    </p>
+  </div>
+
+  <div class="callout badc col">
+    <span class="lbl">这条改变了修复的方向</span>
+    <p>Li/Walsh/Littman 的实测也印证同一件事：出租车问题 500 个状态，用「保价值」的抽象只能压到 489 或 381，
+    用最激进的压到 6 个但<b>破坏了最优性</b>。<b>安全的抽象几乎压不动，能大幅压缩的都不安全。</b></p>
+    <p style="margin-top:9px">所以「给 φ 加第四、第五个维度」这个方向，很可能<b>让事情更糟</b>。</p>
+  </div>
+
+  <h3>一个必须知道的坏消息：阈值会腐烂</h3>
+  <div class="col">
+    <p class="serif">
+      ICSE 2020 有篇专门研究「状态抽象阈值」的工作，在 6000 多个网站、49.3 万个状态对上做了实测：
+    </p>
+  </div>
+  <blockquote class="en">
+    although RTED was able to achieve a high accuracy F1 score of <b>0.95</b> initially, the final produced
+    model had only an F1 of <b>0.45</b>. This deterioration is due to the accumulation of numerous near-duplicates.
+    <span class="src">[已核实] Yandrapally, Stocco &amp; Mesbah, ICSE 2020</span>
+  </blockquote>
+  <div class="col">
+    <p class="serif">
+      <b>一开始调得很准的抽象函数，随着状态积累会退化到几乎无用。</b>
+      而且他们的形式化正好把我们的 φ 描述成了退化情况：抽象函数是一个 <code>(距离度量, 阈值)</code> 对，
+      我们的 φ 是「距离 = 元组不等、阈值 = 0、投影到 3 维」这个最简特例。
+    </p>
+    <p class="serif">
+      <b>这条直接否掉了「一次性重新设计一个更好的 φ」这个思路。</b>无论现在调得多准，树长大之后都会退化——
+      除非抽象函数本身能随时间调整。
+    </p>
+  </div>
+
+  <div class="callout badc col">
+    <span class="lbl">一个必须现在就定的架构决策</span>
+    <p>APE 之所以能重新抽象，是因为它<b>保留了原始的界面树</b>。</p>
+    <p style="margin-top:9px"><b>只存哈希的记忆树，日后永远无法重新抽象。</b>我们现在存的是 <code>StateSig</code> 三元组，不是原始观测——
+    这意味着如果将来要改抽象规则，<b>已经积累的树只能全部作废重跑</b>。这个决定要现在做，不是等森林长大之后。</p>
+  </div>
+
+  <h3>强化学习理论：什么时候合并两个状态是安全的</h3>
+  <div class="col">
+    <p class="serif">RL 里「状态抽象」是个有几十年历史的题目，它给出的是<b>判据</b>而不是算法：</p>
+  </div>
+  <blockquote class="en">
+    A <i>Q*</i>-irrelevance abstraction... for any action <i>a</i>, φ(s₁) = φ(s₂) implies <i>Q*</i>(s₁,a) = <i>Q*</i>(s₂,a)
+    <span class="src">[已核实] Li, Walsh &amp; Littman 2006 · rh_research_li06.txt §3.3</span>
+  </blockquote>
+  <div class="col">
+    <p class="serif">
+      白话：<b>只有当两个局面的「最优动作价值」相同时，把它们合并成一个状态才是安全的。</b>
+    </p>
+    <p class="serif">
+      我们的菜单案例<b>违反了这条</b>——菜单开着时最优动作是「点空白处关掉它」，关着时是「往下滚」，两者的最优动作不同，合并就是错的。
+      而 Nautilus 案例是<b>反方向的错</b>：把最优价值相同的局面拆开了，白白损失数据效率。
+    </p>
+    <p class="serif">
+      这个判据的用法是当<b>诊断工具</b>：如果一个节点推荐出来的动作成功率呈双峰分布，说明这个节点混进了不同的局面。
+      老文献把这个现象叫 <b>perceptual aliasing</b>（知觉混叠）。
+    </p>
+  </div>
+</section>
+
+<!-- ===== 4 ===== -->
+<section id="s4">
+  <div class="sec-head"><span class="sec-num">04</span><h2>几个需要更正的既有认知</h2></div>
+
+  <div class="evbox">
+    <div class="evbox-head"><span class="evbox-title">① Synapse 的「状态抽象」不是我们以为的那种</span></div>
+    <div class="evbox-body">
+      <p>Synapse 有一个叫 "state abstraction" 的机制，名字听起来正是我们要找的先例。<b>它不是。</b></p>
+      <blockquote class="en" style="margin-top:12px">
+        To reduce the length of each state, Synapse takes advantage of the few-shot learning ability of LLMs
+        to extract <b>task-relevant</b> information from raw states and form clean observations
+        <span class="src">[已核实] arxiv.org/html/2306.07863 §3.2</span>
+      </blockquote>
+      <p style="margin-bottom:0">
+        它做的是<b>token 缩减</b>，产物是自由文本，<b>从不被哈希或比对</b>，没有等价关系。
+        更关键的是它<b>按任务条件化</b>——同一个屏幕在不同任务下抽象出不同结果，这和「规范化签名」的要求正好相反。
+        而且它的记忆<b>键</b>是未抽象的原始 HTML + 任务串，抽象只用在值那一侧。
+      </p>
+    </div>
+  </div>
+
+  <div class="evbox">
+    <div class="evbox-head"><span class="evbox-title">② ToolCUA 不是 OSWorld-MCP 那批人做的</span></div>
+    <div class="evbox-body">
+      <p style="margin-bottom:0">我先前说它是「同一批人的后续工作」——<b>不准确</b>。它是 Tongyi Lab（阿里）/ 复旦 / 上海 AI Lab，只是<b>在</b> OSWorld-MCP 上做评测。写进相关工作时要改。</p>
+    </div>
+  </div>
+
+  <div class="evbox">
+    <div class="evbox-head"><span class="evbox-title">③ 「边比点更有信息量」有实验支持</span></div>
+    <div class="evbox-body">
+      <p>Agent-S3 做过一个轨迹表示的对照实验（10 次 rollout）：</p>
+      <div class="code">Screenshot Only        56.0
+Trajectory Summary     55.0
+Naive Captioning       56.8
+<span class="hi2">Behavior Narratives    60.2</span>   ← 逐「转移」提取事实</div>
+      <blockquote class="en" style="margin-top:12px">
+        it is necessary to generate facts over <b>transitions</b> rather than individual <b>states</b>
+        <span class="src">[已核实] arxiv.org/html/2510.02250 §4.4</span>
+      </blockquote>
+      <p style="margin-bottom:0">
+        这对我们是个<b>正面信号</b>：EvoTree 的边已经承载 <code>p(e)</code> 和 cost-to-go，重心本来就在边上。文献支持这个方向。
+      </p>
+    </div>
+  </div>
+</section>
+
+<!-- ===== 5 ===== -->
+<section id="s5">
+  <div class="sec-head"><span class="sec-num">05</span><h2>失败信息怎么用</h2></div>
+  <div class="col">
+    <p class="serif">
+      这是我们另一个卡点：失败的轨迹现在对下一轮贡献<b>零信息</b>。三个系统有可借鉴的做法。
+    </p>
+  </div>
+
+  <div class="tscroll">
+    <table>
+      <thead><tr><th class="tl">系统</th><th class="tl">机制</th><th class="tl">对我们的含义</th></tr></thead>
+      <tbody>
+        <tr><td class="tl"><b>ExpeL</b> 2308.10144</td>
+          <td class="tl">对比成功/失败<b>配对</b>，用四种操作维护洞见池：ADD / UPVOTE / <b>DOWNVOTE</b> / EDIT</td>
+          <td class="tl">DOWNVOTE 是最接近我们 <code>p(e)</code> 的自然语言版本</td></tr>
+        <tr><td class="tl"><b>AutoManual</b> 2405.16247</td>
+          <td class="tl">六类规则（含 <i>Corrected Error</i>、<i>Unsolved Error</i>），结果三分：直接成功 / <b>间接成功</b> / 失败</td>
+          <td class="tl">「出过错但后来解决了」这一类，正是我们边级信号该待的地方</td></tr>
+        <tr><td class="tl"><b>Step-GUI</b> 2512.15431</td>
+          <td class="tl">给失败的探索注入正确答案提示，转成「引导式成功样本」</td>
+          <td class="tl">需要训练，我们用不上</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>两条直接冲着我们边级统计来的警告</h3>
+
+  <div class="evbox">
+    <div class="evbox-head">
+      <span class="evbox-title">警告一：把整轮成败摊到每一步，实测会崩</span>
+      <span class="evbox-sub">ETO · ACL 2024 §4.4</span>
+    </div>
+    <div class="evbox-body">
+      <p>ETO 对比了两种粒度，其中「步级」那种<b>正是我们现在的记账方式</b>——拿最终奖励标注每一步。</p>
+      <div class="code">WebShop 平均奖励：
+  SFT（不做对比）      63.1
+  轨迹级对比           <span class="hi2">67.4</span>
+  步级对比             <span class="hi">8.3</span>   ← 完全崩溃
+  步级（调低学习率）    62.8   ← 仍低于不做对比</div>
+      <blockquote class="en" style="margin-top:12px">
+        This instability may be attributed to the <b>inaccurate estimation of the action quality, as we simply
+        utilize the final rewards to construct step-wise contrastive pairs</b>.
+        <span class="src">[已核实] arXiv 2403.02502 §4.4</span>
+      </blockquote>
+      <p style="margin-bottom:0">
+        <b>「用整轮成败给每条边打分」这个估计量本身有偏。</b>我们能扛住的唯一理由是边被访问足够多次、误归因被平均掉——
+        而我们 n 最大 13、一半以上 n≤2。<b>推荐前应该设最小访问次数门槛</b>，n 太小的边不该被当真。
+      </p>
+    </div>
+  </div>
+
+  <div class="evbox">
+    <div class="evbox-head">
+      <span class="evbox-title">警告二：75% 的失败是「点歪了」，不是「选错了」</span>
+      <span class="evbox-sub">OSWorld 官方错误分析 §5</span>
+    </div>
+    <div class="evbox-body">
+      <blockquote class="en" style="margin-top:0">
+        Among the <b>550 failed examples</b>, <b>more than 75% exist mouse click inaccuracies</b>, which is the
+        most common error. The agent fails to click the correct coordinates <b>despite planning detailed and
+        accurate steps</b>, indicating <b>strong planning but weak execution</b>.
+        <span class="src">[已核实] arXiv 2404.07972 §5</span>
+      </blockquote>
+      <p style="margin-top:12px;margin-bottom:0">
+        <b>一条标记为「失败」的边，四分之三的情况下动作本身是对的，只是没点准。</b>
+        我们把两者混为一谈，结果是<b>树在学着避开正确的动作</b>。边上应该分开记
+        <code>intent_failed</code>（选错了）和 <code>execution_failed</code>（点歪了）。
+      </p>
+    </div>
+  </div>
+
+  <div class="callout goodc col">
+    <span class="lbl">配套解法：按观测标注边，别按自述</span>
+    <p>UI-Evol（OSWorld + Agent S2）的 <b>Retrace</b>：<b>从截图差异反推实际发生了什么</b>，
+    而不是采信 agent 声称做了什么——"free from noise introduced by invalid actions"。</p>
+    <p style="margin-top:9px">这正好接上三轮报告里那个发现：agent 说「已执行」，但屏幕灰度三步纹丝未动。</p>
+  </div>
+
+  <div class="callout badc col">
+    <span class="lbl">AutoManual 给我们现在的设计起了个名字</span>
+    <p>它明确点出「只记成功」的失效模式：</p>
+    <p style="font-family:var(--sans);font-size:14.5px;margin-top:10px">
+      <b>Path Dependence（路径依赖）</b>——"the agent blindly replicates the paths of previous successes,
+      failing to adapt appropriately to new scenarios."
+    </p>
+    <p style="margin-top:10px">这正是我们三轮实验观察到的：<b>系统只在它已经会做的任务上得到强化</b>。</p>
+  </div>
+</section>
+
+<!-- ===== 6 ===== -->
+<section id="s6">
+  <div class="sec-head"><span class="sec-num">06</span><h2>文献实际支持的几个选项</h2></div>
+  <div class="col">
+    <p class="serif">下面每一个都有出处。<b>我不替你选</b>，只把证据强度和代价摆出来。</p>
+  </div>
+
+  <div class="opts">
+    <div class="opt strong">
+      <h4>A · 向环境查询状态，别从屏幕解析<span class="tag ev-strong">证据最强</span></h4>
+      <p>照 SWE-agent 的做法：每步执行几条廉价命令取 <code>pwd</code>、当前应用、文件数，而不是从窗口标题正则匹配。空值用 <code>"n/a"</code> 哨兵。</p>
+      <p><b>为什么最强</b>：这是文献里唯一一个和我们同构的状态元组，而且有消融数据（重算状态 18.0 &gt; 全历史 15.0）。我们<b>已经有 shell 权限</b>，实现成本极低。</p>
+      <div class="tradeoff">同时治三个病：太细（不再解析易变标题）、死维度（<code>dialog</code> 可以查）、工具进度不可见（<code>files_copied=3/3</code> 变成精确值）。代价：每步一次环境往返；把 φ 和操作系统细节耦合起来。</div>
+    </div>
+
+    <div class="opt strong">
+      <h4>B · 状态等价按结构判定<span class="tag ev-strong">证据强</span></h4>
+      <p>照 LASER：只有当观测的<b>结构</b>不同才算不同状态，内容变化不算。搜索框里换个查询串结构没变，菜单弹出来结构变了。</p>
+      <p><b>为什么强</b>：一条规则同时治「太粗」和「太细」两个方向相反的病；LASER 用它把整个域压到 4 个状态。</p>
+      <div class="tradeoff">代价：结构类别要手工枚举，论文自述只适合特定域。对我们意味着要为 os 域列一份「结构清单」。</div>
+    </div>
+
+    <div class="opt strong">
+      <h4>C · 非确定性触发的自适应细化<span class="tag ev-strong">有现成信号</span></h4>
+      <p>保留 φ，但从「固定元组」改成「运行时可细化」。同一状态同一动作导致不同结果时拆节点；拆过头（超 δ 个）回退。</p>
+      <p><b>为什么可行</b>：APE 在 1316 个 app 上验证过，<b>而且我们数据里已经有这个信号</b>——22 条边中 3 条命中。</p>
+      <div class="tradeoff">代价：细化后要重建子树，累积的 <code>p(e)</code> 和 cost-to-go 会失效——这一步要想清楚统计量怎么迁移。</div>
+    </div>
+
+    <div class="opt mid">
+      <h4>D · 把工具进度加进状态<span class="tag ev-mid">证据中</span></h4>
+      <p>状态改成「屏幕签名 + 工具结果摘要」，对应 ToolCUA 的 <i>s<sub>t</sub></i>。治「终端任务 φ 是废的」。</p>
+      <p><b>数据支撑</b>：OSWorld-MCP 自述 <b>42% 的任务</b>需要多轮工具调用，最强模型纯 GUI 做四轮工具任务得分为 <b>0</b>——那正是屏幕-only φ 的盲区。</p>
+      <div class="tradeoff">代价：UltraCUA 的自由文本版本只有 +1.6 个百分点，作者自称「modest」。而且很容易在新维度上重演「太细」——字节数会像查询串一样打碎状态。<b>与 A 高度重叠</b>，A 是它更精确的实现。</div>
+    </div>
+
+    <div class="opt mid">
+      <h4>E · 重心从点移到边<span class="tag ev-mid">证据中</span></h4>
+      <p>OS-Symphony 的<b>循环检测</b>能直接抓「8 步里 2 步在关菜单」，完全不需要更细的 φ。Agent-S3 的消融显示转移事实（60.2）优于状态表示（56.8）。</p>
+      <div class="tradeoff">代价：削弱精确匹配查表；里程碑标注要每步一次 VLM 调用。但如果只在意「菜单浪费步数」这个具体病，这比重设计 φ 便宜得多。</div>
+    </div>
+
+    <div class="opt mid">
+      <h4>F · 从失败里取信号<span class="tag ev-mid">方案完整</span></h4>
+      <p>加 DOWNVOTE 式负面证据，采用 AutoManual 的三分结果（直接成功 / <b>间接成功</b> / 失败）。</p>
+      <p><b>AutoManual 给我们的病起了名</b>：<b>Path Dependence</b>——"the agent blindly replicates the paths of previous successes"。</p>
+      <div class="tradeoff">代价：失败轨迹内部的信用分配仍未解，AutoManual 用条件化提示缓解而非解决，误归因风险真实。</div>
+    </div>
+  </div>
+
+    <div class="opt strong">
+      <h4>G · 双层键：粗键记统计，细键分歧时才用<span class="tag ev-strong">唯一同时治两病</span></h4>
+      <p>照 DroidBot：每个状态同时算「内容无关」的粗键和「内容敏感」的细键。粗键上累积 <code>p(e)</code>，细键只在行为真的分叉时才用来区分兄弟节点。</p>
+      <p><b>为什么值得单列</b>：这是所有选项里<b>唯一一个同时解决「太粗」和「太细」的</b>——其它选项都只能治一个方向。</p>
+      <div class="tradeoff">代价：两套键要维护；必须决定统计量挂在哪一层。另外 DroidBot 的键是控件集合，按这个思路 <code>dialog</code> 维度应该<b>取消</b>而不是补上（弹窗只是多几个控件）。</div>
+    </div>
+
+    <div class="opt mid">
+      <h4>H · 从转移记录里学动作等价<span class="tag ev-mid">今天就能做</span></h4>
+      <p>AutoDroid 的规则：如果两个动作的（起点，终点）状态对相同，就合并它们。<b>从我们已有的轨迹里就能算</b>，不需要更好的观测。</p>
+      <p>它把动作空间从每状态 36.4 个选择压到 13.2 个。</p>
+      <div class="tradeoff">代价：需要每条边有足够的重复遍历才可靠——我们现在 n 最大才 13；可能把「碰巧在已见轨迹上一致」的动作错误合并。</div>
+    </div>
+  </div>
+
+  <div class="callout warnc col">
+    <span class="lbl">两条横跨所有选项的约束</span>
+    <p><b>① 别按模态拆树。</b>UI-TARS-2 发现 GUI 和 SDK 共享一个价值模型比分开建更好，混合训练连纯 GUI 性能都提升了。</p>
+    <p style="margin-top:9px"><b>② 预期先降后升。</b>ToolCUA 实测：<b>光是把两种动作空间都摆出来就会掉分</b>——Claude-4.5-Sonnet −13.5%，Qwen3VL 41.1%→38.1%（每轨迹 6.10 次工具调用）。它们自己的最优模型只用 <b>0.74 次</b>。<b>少而准 &gt; 多而滥</b>，这对我们的推荐栏是直接警告：推荐工具动作本身不是好事。</p>
+  </div>
+</section>
+
+<!-- ===== 7 ===== -->
+<section id="s6b">
+  <div class="sec-head"><span class="sec-num">07</span><h2>拿文献的判据回测我们自己的树</h2></div>
+  <div class="col">
+    <p class="serif">
+      调研给了两个可以直接算的指标。我在三轮实验的记忆树上跑了一遍，<b>结果推翻了我们一直以来的假设</b>。
+    </p>
+  </div>
+
+  <h3>指标一：状态重现率 —— 不低，而且在涨</h3>
+  <div class="col">
+    <p class="serif">
+      GiGPO 在 ALFWorld 上实测超过 65% 的状态会跨轨迹重现，这是「状态复用值不值得做」的参照线。我们的数：
+    </p>
+  </div>
+  <div class="tscroll">
+    <table>
+      <thead><tr><th class="tl">轮次</th><th class="num">节点</th><th class="num">总访问</th><th class="num">重现率</th><th class="tl">对照</th></tr></thead>
+      <tbody>
+        <tr><td class="tl">pass1</td><td class="num">8</td><td class="num">25</td><td class="num">68.0%</td><td class="tl">GiGPO 参照线 &gt;65%</td></tr>
+        <tr><td class="tl">pass2</td><td class="num">13</td><td class="num">51</td><td class="num">74.5%</td><td class="tl">—</td></tr>
+        <tr><td class="tl">pass3</td><td class="num">15</td><td class="num">67</td><td class="num" style="color:var(--good);font-weight:600">77.6%</td><td class="tl">高于参照线，且逐轮上升</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="callout goodc col">
+    <span class="lbl">这条排除了一个假设</span>
+    <p><b>「签名太细导致树碎掉」是错的。</b>状态复用充分，而且随轮次改善。「太细」这个方向不需要优先处理。</p>
+  </div>
+
+  <h3>指标二：APE 非确定性报警 —— 100% 集中在一个签名上</h3>
+  <div class="code">pass2   1 条报警   全部在 ('unknown', '', None)
+pass3   3 条报警   全部在 ('unknown', '', None)
+
+<span class="hi">没有一条落在有真实标题的节点上。</span></div>
+
+  <h3>指标三：空签名节点吃掉了三分之二的访问</h3>
+  <div class="code">pass3  共 15 个节点
+   x4   访问 46 次  <span class="hi">(69% 的访问)</span>  ('unknown', '', None)
+   x2   访问  6 次   ('Gnome-control-center', 'Settings', None)
+   x2   访问  4 次   ('Gnome-terminal', 'user@user-virtual-machine: ~', None)
+   其余 7 个节点     各访问 0–3 次</div>
+
+  <div class="col">
+    <p class="serif">再看这 4 个空签名节点内部——<b>所有的岔路口都在它们身上</b>：</p>
+  </div>
+  <div class="tscroll">
+    <table>
+      <thead><tr><th class="tl">树</th><th class="num">访问</th><th class="num">出边</th><th class="tl">非确定性边</th></tr></thead>
+      <tbody>
+        <tr><td class="tl"><code>Recursively</code></td><td class="num">10</td><td class="num">4</td>
+          <td class="tl" style="color:var(--bad)">3 条（全部报警都在这）</td></tr>
+        <tr><td class="tl"><code>Copies_file</code></td><td class="num">9</td><td class="num">2</td><td class="tl" style="color:var(--bad)">1 条</td></tr>
+        <tr><td class="tl"><code>battery</code></td><td class="num">18</td><td class="num">2</td><td class="tl">0</td></tr>
+        <tr><td class="tl"><code>Could_you_set</code></td><td class="num">9</td><td class="num">1</td><td class="tl">0</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="callout badc col">
+    <span class="lbl">诊断结论</span>
+    <p><b>不是 φ 的设计错了，是 φ 根本没取到值。</b></p>
+    <p style="margin-top:9px">
+      69% 的访问落在一个三个字段全空的节点上——<b>那不是一个状态，那是「取不到数据」的占位符</b>。
+      而所有有真实内容的签名（<code>Settings</code>、<code>Home</code>、<code>cpjpg</code>、<code>user@…:~</code>）<b>一条报警都没有</b>。
+    </p>
+    <p style="margin-top:9px">
+      这正好对上调研的第一条建议：<b>向环境查询，别从屏幕解析</b>。
+      现在从 <code>wmctrl</code> 解析窗口标题，拿不到就是 <code>unknown</code>；改成执行命令直接问 <code>pwd</code>、当前应用、进程状态，
+      这 69% 才会变成真实的状态。
+    </p>
+  </div>
+
+  <div class="tscroll">
+    <table>
+      <thead><tr><th class="tl">之前担心的</th><th class="tl">诊断结果</th><th class="tl">优先级</th></tr></thead>
+      <tbody>
+        <tr><td class="tl">签名太细、树会碎</td><td class="tl">重现率 68→78%，还在涨</td><td class="tl no">排除</td></tr>
+        <tr><td class="tl">该给 φ 加维度</td><td class="tl">报警全在空签名上，加维度救不了</td><td class="tl no">排除</td></tr>
+        <tr><td class="tl">Nautilus 搜索串污染</td><td class="tl">真实存在（4 个节点），但<b>零报警</b></td><td class="tl">低</td></tr>
+        <tr><td class="tl">φ 取不到值</td><td class="tl">69% 访问落在空签名上</td><td class="tl yes">最高</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section id="s7">
+  <div class="sec-head"><span class="sec-num">08</span><h2>我的判断（这部分是观点，不是文献）</h2></div>
+  <div class="col">
+    <p class="serif">
+      <b>你的直觉是对的。而且查完之后，我要收回自己一开始的判断。</b>
+    </p>
+    <p class="serif">
+      我原本准备写的结论是「几乎没人做离散状态，我们在无人区」。<b>这个结论是错的。</b>
+      DroidBot 2023 年就在用 <code>md5(activity + 控件签名集合)</code> 当状态键，AutoDroid 拿它跑了 158 个任务，
+      ActionEngine、EAM、UI-KOBE、ScreenSearch 都在建同样的图。<b>方向没问题，问题在实现。</b>
+    </p>
+
+    <p class="serif">
+      <b>错误一：我们「解析」屏幕，而该「查询」环境。</b>
+      SWE-agent 执行一条命令拿到 <code>pwd</code> 和当前文件——精确、廉价、无歧义。
+      我们从窗口标题正则匹配，于是 Nautilus 一把搜索串塞进标题，状态就碎了。
+      <b>而我们有 shell 权限</b>，这些本来都能直接问出来。
+    </p>
+    <p class="serif">
+      <b>错误二：我们停在了这批工作的起点上。</b>
+      注意先例的演进方向——DroidBot 用精确元组匹配，EAM 和 UI-KOBE 都改成了「嵌入召回 + 模型验证」两段式。
+      <b>他们从精确元组走开，正是因为元组既会过度合并、又会过度分裂</b>，就是我们现在这两个病。
+      我们等于在 2026 年重走了 2023 年的实现。
+    </p>
+    <p class="serif">
+      <b>错误三，也是最反直觉的：我们一直想给 φ 加维度，方向可能是反的。</b>
+      实证研究显示，像 EvoTree 这样在边上累积价值统计的系统<b>需要更粗的状态</b>——太细会让每个节点拿不到足够样本，
+      价值估计退化成噪声。我们 22 条边里 n 最大才 13，一半以上 n≤2。再加维度只会让样本更稀。
+    </p>
+
+    <p class="serif">
+      <b>两条可以直接动手的具体结论：</b>
+    </p>
+    <ul class="plain">
+      <li><b><code>dialog</code> 维度不是「死了」，是「多余」。</b>所有状态图系统都从<b>屏幕内容</b>推导身份，
+        而不是窗口外壳。DroidBot 的 <code>activity{控件签名集合}</code> 自动涵盖弹窗——<b>弹窗只是多了几个控件</b>。
+        把三元组的固定槽位换成「应用 + 窗口 + 显著元素的规范化集合」，「太粗」和「死维度」两个病一起消失。</li>
+      <li><b>取值型工具调用该建成自环边。</b><code>os.get_volume</code> 这类只读不改的调用不改变状态，
+        应该是绑定符号变量的自环边；<code>os.set_volume</code> 这类才是真转移边。我们现在把两者混在一起。</li>
+    </ul>
+    <p class="serif">
+      <b>还有一个架构决策要现在做：</b>我们只存 <code>StateSig</code> 不存原始观测。
+      APE 能重新抽象是因为它保留了原始界面树，UI-KOBE 能事后审计合并是因为它留了参考截图。
+      而 ICSE 2020 那个 F1 从 0.95 掉到 0.45 的结果说明<b>任何固定阈值都会随规模腐烂</b>——
+      也就是说我们<b>迟早要改抽象规则</b>。现在不留原始观测，到时候已积累的树只能全部作废。
+    </p>
+
+    <p class="serif">
+      <b>关于定位：</b>「节点是离散状态」不能再当新意讲了。真正还没人做的是
+      <b>「跨任务持久图 + 边上同时挂成功率和 cost-to-go + 真实桌面环境」这个组合</b>——
+      ScreenSearch 有边级统计但不管任务成败，EAM 有 Q 函数但在 Android，GATS 两样都有但只在合成环境跑过。
+      这个缺口是真的，但比我原以为的窄得多。
+    </p>
+
+    <p class="serif">
+      <b>下一步我建议先做一次测量，不动设计。</b>GiGPO 报告 ALFWorld 上超过 65% 的状态会跨轨迹重现——
+      这给了我们一个该测的数：<b>我们树里的状态重现率是多少？</b>再加一个 APE 的检测：
+      <code>p</code> 落在 0 和 1 之间的边，是不是集中在 <code>(unknown, '', None)</code> 那一个节点上？
+    </p>
+    <p class="serif">
+      <b>另外两条与 φ 无关、但同样紧急的修正：</b>
+    </p>
+    <ul class="plain">
+      <li><b>推荐前设最小访问次数门槛。</b>ETO 实测「用整轮成败标注每一步」这个估计量会崩（8.3 vs 67.4）。
+        我们靠「多次访问平均掉误归因」来扛，但 n 最大才 13——<b>n 太小的边不该进推荐栏</b>。</li>
+      <li><b>把「选错了」和「点歪了」分开记。</b>OSWorld 官方分析：<b>75% 的失败是点击不准，动作本身是对的</b>。
+        混在一起，树会学着避开正确的动作。</li>
+    </ul>
+    <p class="serif">
+      这两个数半天能出，而且能直接分诊：<b>重现率低 → 签名太细，该走「查询而非解析」；
+      报警集中在空签名节点 → 根本不是设计问题，是那个节点压根没取到数据。</b>
+      两种情况的修法完全不同，先测清楚再动手。
+    </p>
+  </section>
+
+<footer>
+  EvoTree 文献调研 · 2026-09-10 · 核查 20+ 篇，双模态系统 10 个<br>
+  标注 <span class="src" style="margin:0">[已核实]</span> 的均为本次会话中亲自读取原文；未能核实的已在正文标出<br>
+  原始摘录保存在 <code>temp/rh_research_*</code>（约 250 个文件）· 本地论文源码 <code>ref/toolcua</code>、<code>ref/osworld-mcp</code><br><br>
+  状态图先例：DroidBot(源码) · AutoDroid 2308.15272 · ActionEngine 2602.20502 · UI-KOBE 2605.29534 ·
+  EAM 2605.12294 · ScreenSearch 2605.16024 · GiGPO 2505.10978 · LASER 2309.08172<br>
+  双模态：ToolCUA 2605.12481 · UltraCUA 2510.17790 · CoAct-1 2508.03923 · OS-Symphony 2601.07779 ·
+  MCPWorld 2506.07672 · UI-TARS-2 2509.02544 · OSWorld-MCP 2510.24563<br>
+  GUI 记忆：Agent-S 2410.08164 · Agent-S3 2510.02250 · AWM 2409.07429 · Synapse 2306.07863 · OSCAR 2410.18963(ICLR版)<br>
+  CLI/工具：SWE-agent 2405.15793 · OpenHands 2407.16741 · Voyager 2305.16291 · ReAct 2210.03629 · LASER 2309.08172<br>
+  失败学习：ExpeL 2308.10144 · AutoManual 2405.16247 · LATS 2310.04406 · ETO 2403.02502 · Agent-R 2501.11425 · UI-Evol 2505.21964<br>
+  状态抽象：APE (ICSE'19) · DroidBot · AutoDroid · Yandrapally 等 (ICSE'20) · Li/Walsh/Littman 2006 · McCallum 1994
+</footer>
+
+</div>
