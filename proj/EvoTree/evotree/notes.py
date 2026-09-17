@@ -27,6 +27,21 @@ class GlobalNotes:
     """全局坑位手册：按工具名索引的、任务无关的坑位/报错笔记。
 
     数据结构：tool_name -> 去重的笔记列表。
+
+    **索引键有两种粒度**（2026-09-17 实验三的教训，必须记住）：
+
+    - 顶层工具名：``os.open_shell`` —— MCP 工具表里真实存在的名字；
+    - 子动作名：``computer_use.key`` —— GUI 动作模板名（``ActionTmpl.name``），
+      环境里并没有叫这个名字的工具，``computer_use`` 才是工具，``key``/``type``
+      是它的 ``action`` 参数取值。
+
+    两者都会作为 key 出现：写入侧记的是 ``ActionTmpl.name``（GUI 动作必然带
+    子动作后缀），而检索侧手里只有 ``candidate_tools``（顶层工具名）。实验三
+    因此整轮 [注意] 栏为空 —— 拿 ``computer_use`` 去精确查 ``computer_use.key``
+    永远查不到，且静默返回空列表，没有任何报错。
+
+    所以查询一律走 ``query_namespace``（工具名 + 其子动作命名空间），
+    ``query`` 只做单键精确查询，保留给明确知道自己要哪个键的调用方。
     """
 
     def __init__(self) -> None:
@@ -45,8 +60,32 @@ class GlobalNotes:
             bucket.append(note)
 
     def query(self, tool_name: str) -> list[str]:
-        """查某工具的坑位笔记（检索第 3 拍[注意]用）。无则返回空列表。"""
+        """单键精确查询。**检索请用 ``query_namespace``**，见类 docstring。"""
         return list(self._notes.get(tool_name, []))
+
+    def query_namespace(self, tool_name: str) -> list[str]:
+        """查某工具及其子动作命名空间下的全部坑位笔记（检索第 3 拍[注意]用）。
+
+        ``query_namespace("computer_use")`` 同时命中 ``computer_use`` 本身与
+        ``computer_use.key``、``computer_use.type`` 等子动作键 —— 因为检索侧
+        手里只有顶层工具名，而写入侧记的是带子动作的动作模板名（见类
+        docstring 的实验三教训）。
+
+        顺序：先本键，再子动作键按键名排序，保证渲染稳定可复现。
+        去重按笔记原文（同一条坑挂在多个子动作上时只说一次）。
+        """
+        if not tool_name:
+            return []
+        seen: set[str] = set()
+        result: list[str] = []
+        prefix = f"{tool_name}."
+        keys = [tool_name] + sorted(k for k in self._notes if k.startswith(prefix))
+        for key in keys:
+            for note in self._notes.get(key, []):
+                if note not in seen:
+                    seen.add(note)
+                    result.append(note)
+        return result
 
     def tools_covered(self) -> list[str]:
         """已收录坑位的工具名列表（分析/统计用）。"""

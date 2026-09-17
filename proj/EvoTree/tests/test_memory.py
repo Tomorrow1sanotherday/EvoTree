@@ -4,6 +4,8 @@
 读出小抄。同时覆盖冷启动、冻结、贯穿示例（idea §8）。
 """
 
+from evotree.distill_osworld import OSWorldDistiller
+from evotree.episode import Episode, EpisodeStep
 from evotree.memory import EvoTreeMemory, Step
 
 
@@ -118,6 +120,133 @@ class TestWalkthrough:
         sheet = mem.read_cheatsheet("other task", obs(app="impress"),
                                     candidate_tools=["duplicate_slide"])
         assert any("越界" in c for c in sheet.cautions)
+
+
+class TestGuiPitNotesReachTheAgent:
+    """GUI 动作的坑必须能沉淀、并被真实工具名查出来（实验三 2026-09-17 事故）。
+
+    事故复盘：注入链路全绿，但整轮 [注意] 栏零注入，agent 连按 11 次
+    ``Ctrl+Alt+T`` 打不开终端 —— 而种子里明明写着这条警告。两个原因叠加：
+
+    1. ``_record_note`` 只收 ``kind == TOOL``，GUI 动作的坑被静默丢弃；
+    2. 检索侧手里是顶层工具名 ``computer_use``，笔记却挂在动作模板名
+       ``computer_use.key`` 上，精确查表永远查不到、且不报错。
+
+    OSWorld 的失败绝大多数是 GUI 动作失败，所以这两条合起来等于注意栏对
+    主要失败模式完全失聪。这组测试钉住修复后的行为。
+    """
+
+    @staticmethod
+    def _gui_episode(instruction, note):
+        """一轮 GUI 动作失败的 episode（按 OSWorld 的真实动作形状）。"""
+        return Episode(
+            instruction=instruction,
+            steps=(
+                EpisodeStep(
+                    step_index=0,
+                    observation=obs(app="unknown", window=""),
+                    raw_action={
+                        "action": {
+                            "action_type": "computer_use.key",
+                            "parameters": {"keys": ["CTRL", "ALT", "T"]},
+                        }
+                    },
+                    note=note,
+                    action_success=False,
+                ),
+            ),
+            success=False,
+        )
+
+    def _memory(self):
+        return EvoTreeMemory(distiller=OSWorldDistiller())
+
+    def test_gui_note_is_recorded_at_all(self):
+        # 原实现在这里就丢了：kind == GUI 不入库
+        mem = self._memory()
+        mem.write_episode(self._gui_episode("open a terminal", "快捷键没反应"))
+        assert "computer_use.key" in mem.notes.tools_covered()
+
+    def test_real_tool_name_surfaces_the_gui_note(self):
+        """终点检验：拿运行时真实的候选工具名，必须查得到这条坑。
+
+        ``candidate_tools`` 只有 ``computer_use`` —— 这就是 OSWorld MCP 工具表
+        里唯一真实存在的名字（``key``/``type`` 是它的 action 参数取值）。
+        """
+        mem = self._memory()
+        mem.write_episode(
+            self._gui_episode("open a terminal", "Ctrl+Alt+T 常打不开终端")
+        )
+        sheet = mem.read_cheatsheet(
+            "some other task",
+            obs(app="unknown", window=""),
+            candidate_tools=["computer_use"],
+        )
+        assert any("打不开终端" in c for c in sheet.cautions)
+
+    def test_caution_actually_renders_into_the_prompt(self):
+        """真正的防线：小抄文本非空。
+
+        事故期间前面每一环都"正常"，只有这一步的产物是空串 —— 而没人断言它。
+        """
+        mem = self._memory()
+        mem.write_episode(
+            self._gui_episode("open a terminal", "Ctrl+Alt+T 常打不开终端")
+        )
+        text = mem.read(
+            "some other task",
+            obs(app="unknown", window=""),
+            candidate_tools=["computer_use"],
+        )
+        assert "[注意]" in text
+        assert "打不开终端" in text
+
+    def test_seeded_notes_reach_the_agent(self):
+        """种子手册里按子动作名写的笔记，也要能被真实工具名查出来。
+
+        实验三的种子就是这么写的（``computer_use.key`` / ``computer_use.type``），
+        当时一条都没送达。
+        """
+        mem = self._memory()
+        mem.notes.add_note("computer_use.key", "Ctrl+Alt+T 常打不开终端")
+        mem.notes.add_note("computer_use.type", "敲命令前先确认终端持有焦点")
+        text = mem.read(
+            "brand new task",
+            obs(app="unknown", window=""),
+            candidate_tools=["computer_use"],
+        )
+        assert "打不开终端" in text
+        assert "确认终端持有焦点" in text
+
+    def test_tool_notes_still_work(self):
+        # 回归：原本就支持的 TOOL 动作不能因为放宽 kind 判据而回退
+        mem = self._memory()
+        mem.write_episode(
+            Episode(
+                instruction="copy files",
+                steps=(
+                    EpisodeStep(
+                        step_index=0,
+                        observation=obs(app="os", window="Files"),
+                        raw_action={
+                            "action": {
+                                "action_type": "os.open_shell",
+                                "parameters": {},
+                            }
+                        },
+                        note="有时起不来",
+                        action_success=False,
+                    ),
+                ),
+                success=False,
+            )
+        )
+        sheet = mem.read_cheatsheet(
+            "another task",
+            obs(app="os", window="Files"),
+            candidate_tools=["os.open_shell"],
+        )
+        assert any("起不来" in c for c in sheet.cautions)
 
 
 # --------------------------- 冻结（Setting II）--------------------------- #

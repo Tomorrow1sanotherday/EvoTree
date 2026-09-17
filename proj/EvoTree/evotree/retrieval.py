@@ -142,6 +142,11 @@ class Retriever:
         for rec in sheet.recommendations:
             if rec.action.kind == ActionKind.TOOL:
                 caution_tools.add(rec.action.name)
+            else:
+                # GUI 动作模板名是 computer_use.key 这种带子动作的形式，环境里
+                # 真实存在的工具只有 computer_use。查坑要用工具名这一级，
+                # 子动作下的笔记由 query_namespace 一并带出（见 notes 模块）。
+                caution_tools.add(rec.action.name.split(".", 1)[0])
         sheet.cautions = self._build_cautions(notes, caution_tools)
 
         # ⑤ 工具重排：候选工具按推荐分数排前，其余保持原序
@@ -236,9 +241,16 @@ class Retriever:
     # ------------------------------------------------------------------ #
     @staticmethod
     def _build_cautions(notes: GlobalNotes, tools: set[str]) -> list[str]:
+        """按工具名查坑。
+
+        走 ``query_namespace`` 而不是 ``query``：手里的名字是顶层工具名
+        （``computer_use``），而笔记可能挂在子动作键上（``computer_use.key``）。
+        用精确查询会整栏为空且不报错 —— 实验三（2026-09-17）整轮 [注意] 栏
+        零注入就是这个原因，agent 连按 11 次 Ctrl+Alt+T 而警告从未送达。
+        """
         cautions: list[str] = []
         for tool_name in sorted(tools):
-            for note in notes.query(tool_name):
+            for note in notes.query_namespace(tool_name):
                 cautions.append(f"{tool_name}: {note}")
         return cautions
 

@@ -34,7 +34,7 @@ from .notes import GlobalNotes
 from .retrieval import Cheatsheet, Retriever, render_cheatsheet
 from .scoring import DEFAULT_GAMMA, DEFAULT_UCB_C
 from .template_lib import TemplateLibrary
-from .types import ActionKind, ActionTmpl, StateSig
+from .types import ActionTmpl, StateSig
 
 
 @dataclass
@@ -172,9 +172,8 @@ class EvoTreeMemory:
             )
             if episode.success:
                 success_path.append(edge)
-            # 工具报错另记注意栏：不影响 p，但要让 agent 知道这工具的坑。
-            if step.note and action.kind == ActionKind.TOOL:
-                self.notes.add_note(action.name, step.note)
+            # 报错另记注意栏：不影响 p，但要让 agent 知道这一步有什么坑。
+            self._record_note(action, step.note)
 
         if episode.success:
             tree.record_steps_after_success(success_path)
@@ -234,8 +233,18 @@ class EvoTreeMemory:
             tree.record_steps_after_success(step_edges)
 
     def _record_note(self, action: ActionTmpl, note: Optional[str]) -> None:
-        """工具报错的坑位笔记，抄一份进全局手册（仅工具动作）。"""
-        if note and action.kind == ActionKind.TOOL:
+        """报错的坑位笔记，抄一份进全局手册。
+
+        **GUI 动作也要记**（2026-09-17 修）。原实现只收 ``kind == TOOL``，
+        而 OSWorld 的失败绝大多数是 GUI 动作失败（点错位置、命令打进了没有
+        焦点的窗口），于是注意栏对主要失败模式完全失聪 —— 实验三里 agent
+        连按 11 次 ``Ctrl+Alt+T`` 打不开终端，这种最该沉淀的坑一条都没进库。
+
+        GUI 动作的 key 是动作模板名（``computer_use.key``），检索侧拿顶层
+        工具名 ``computer_use`` 查时由 ``query_namespace`` 一并带出，
+        见 ``notes`` 模块的 docstring。
+        """
+        if note:
             self.notes.add_note(action.name, note)
 
     # ------------------------------------------------------------------ #
