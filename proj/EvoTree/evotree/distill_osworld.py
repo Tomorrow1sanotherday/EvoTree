@@ -33,7 +33,16 @@ _CONCLUSION = re.compile(
     r"<conclusion>\s*(.*?)\s*</conclusion>", re.DOTALL | re.IGNORECASE
 )
 
-_GUI_TOOL_NAME = "computer_use"
+GUI_TOOL_NAME = "computer_use"
+"""OSWorld GUI 工具名。**公开常量**，因为 wrapper 也要用它。
+
+这是环境里唯一真实存在的 GUI 工具：``key``/``type``/``click`` 是它的
+``action`` 参数取值，不是独立工具。它由 agent 无条件提供
+（``owl_agent.py``: ``functions = [computer_use.function]``），
+**不出现在 ``obs["tool_list"]`` 里** —— 后者只装 MCP 工具，os 域任务下为空。
+osworld_integration 拼候选工具名时必须显式带上它，否则注意栏拿不到名字可查。
+"""
+
 _TERMINAL_ACTIONS = {"terminate", "done", "fail"}
 
 # --------------------------------------------------------------------------- #
@@ -204,10 +213,10 @@ class OSWorldDistiller(RuleBasedDistiller):
                 if not isinstance(args, Mapping):
                     args = {}
                 normalized_name = name.strip()
-                if normalized_name.startswith(f"{_GUI_TOOL_NAME}."):
+                if normalized_name.startswith(f"{GUI_TOOL_NAME}."):
                     args = dict(args)
                     args.setdefault("action", normalized_name.split(".", 1)[1])
-                    normalized_name = _GUI_TOOL_NAME
+                    normalized_name = GUI_TOOL_NAME
                 return self._action_from_call(
                     {"name": normalized_name, "arguments": dict(args)}
                 )
@@ -227,7 +236,7 @@ class OSWorldDistiller(RuleBasedDistiller):
             # 格式异常时不把字符串误当作参数名序列。
             args = {}
 
-        if name == _GUI_TOOL_NAME:
+        if name == GUI_TOOL_NAME:
             # 子动作是最稳定的 GUI 归堆粒度，仍作主键；
             # text/keys 等可复用值走 args（不进主键，见 ActionTmpl 文档）。
             sub_action = str(args.get("action", "gui")).strip() or "gui"
@@ -263,7 +272,7 @@ class OSWorldDistiller(RuleBasedDistiller):
         prediction = raw_action.get("prediction")
         if isinstance(prediction, str):
             call = parse_prediction(prediction)
-            if call and call.get("name") == _GUI_TOOL_NAME:
+            if call and call.get("name") == GUI_TOOL_NAME:
                 sub_action = str(call.get("arguments", {}).get("action", "")).lower()
                 return sub_action in _TERMINAL_ACTIONS
         return False

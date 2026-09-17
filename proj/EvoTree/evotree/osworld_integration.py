@@ -20,7 +20,7 @@ import re
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any, Optional
 
-from .distill_osworld import OSWorldDistiller, extract_error_note
+from .distill_osworld import GUI_TOOL_NAME, OSWorldDistiller, extract_error_note
 from .integration import EvoTreeRuntime, inject_cheatsheet
 from .memory import EvoTreeMemory
 
@@ -105,6 +105,28 @@ def candidate_tool_names(tool_list: Any) -> list[str]:
                 name = item.get("name")
         if isinstance(name, str) and name.strip() and name.strip() not in names:
             names.append(name.strip())
+    return names
+
+
+def available_tool_names(tool_list: Any) -> list[str]:
+    """agent 手上**真正能调**的工具名：MCP 工具表 + 恒在的 GUI 工具。
+
+    与 ``candidate_tool_names`` 的区别（2026-09-18 修，实验四第一小时的教训）：
+    后者忠实反映 ``obs["tool_list"]`` 的 schema，用于工具重排；但那张表里
+    **没有 ``computer_use``** —— 它由 agent 无条件附加
+    （``owl_agent.py``: ``functions = [computer_use.function]; functions.extend(tool_list)``），
+    而 os 域任务的 ``tool_list`` 恰好是空的（``_get_obs`` 只为 libreoffice 三兄弟
+    映射 MCP 工具表）。
+
+    于是注意栏拿到的候选名字是空列表，循环体一次都不执行，坑位笔记再对也送不出去
+    —— 实验三整轮 [注意] 零注入的第二道闸门，修好 notes 查询后仍卡在这里。
+
+    GUI 工具放在末尾：重排的语义是"有战绩的 MCP 工具排前面"，不该因为这次补名
+    而改变 MCP 工具之间的相对顺序。
+    """
+    names = candidate_tool_names(tool_list)
+    if GUI_TOOL_NAME not in names:
+        names.append(GUI_TOOL_NAME)
     return names
 
 
@@ -196,7 +218,10 @@ class EvoTreeAgentWrapper:
             self._instruction = instruction
 
         mapped = self.observation_mapper(obs)
-        names = candidate_tool_names(obs.get("tool_list"))
+        # 用 available_tool_names 而不是 candidate_tool_names：注意栏要查的是
+        # agent 真正能调的工具，而 computer_use 不在 obs["tool_list"] 里。
+        # 重排不受影响 —— reorder_tool_list 只认 tool_list 里真实存在的项。
+        names = available_tool_names(obs.get("tool_list"))
         before = self.runtime.before_model(dict(mapped), names)
         self.last_before_model = before
 
