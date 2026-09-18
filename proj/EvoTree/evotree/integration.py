@@ -23,12 +23,15 @@ EvoTree 不负责执行动作、不改变 agent 的决策权，只在模型调�
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from typing import Any, Mapping, Optional
 
 from .episode import Episode, EpisodeStep, RuntimeStep
 from .memory import EvoTreeMemory
 from .retrieval import Cheatsheet, render_cheatsheet
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -71,10 +74,46 @@ class EvoTreeRuntime:
         cheatsheet = self.memory.read_cheatsheet(
             self.instruction, observation, candidate_tools
         )
-        return BeforeModelResult(
+        result = BeforeModelResult(
             cheatsheet=cheatsheet,
             text=render_cheatsheet(cheatsheet),
             reranked_tools=list(cheatsheet.reranked_tools),
+        )
+        self._log_retrieval(observation, candidate_tools, result)
+        return result
+
+    def _log_retrieval(
+        self,
+        observation: dict[str, Any],
+        candidate_tools: Optional[list[str]],
+        result: BeforeModelResult,
+    ) -> None:
+        """把这一步的检索条件与命中情况记一行，供事后诊断。
+
+        为什么需要它（2026-09-18）：实验三、四两轮都栽在"注入为什么没发生"
+        上，而事后只能靠翻 runner 的 debug 日志、反推 prompt 里有没有小抄 ——
+        既慢又只能看到结果，看不到**当时的检索条件**（φ 是什么、树在不在、
+        节点命没命中）。实验四暴露的 P1（注入只在前 3 步，之后 φ 从 unknown
+        变成真实 app、与种子节点对不上）就是这样一点点推出来的。
+
+        这一行日志把条件直接写下来，下次不用再猜。走 logging，默认 WARNING
+        级别下不输出，不影响正常运行的日志量。
+        """
+        if not logger.isEnabledFor(logging.INFO):
+            return
+        sig = self.memory.distiller.distill_state(observation)
+        template = self.memory.distiller.distill_task(self.instruction or "")
+        tree = self.memory.forest.get_tree(template.template_id)
+        node = tree.node_for_signature(sig) if tree is not None else None
+        logger.info(
+            "[evotree] phi=%s tau=%s tree=%s node=%s recs=%d cautions=%d tools=%s",
+            sig.key(),
+            template.template_id,
+            "hit" if tree is not None else "miss",
+            "hit" if node is not None else "miss",
+            len(result.cheatsheet.recommendations),
+            len(result.cheatsheet.cautions),
+            list(candidate_tools or []),
         )
 
     def after_action(
