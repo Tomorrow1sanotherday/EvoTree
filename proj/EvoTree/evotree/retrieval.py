@@ -101,7 +101,7 @@ class Retriever:
         ucb_c: float = DEFAULT_UCB_C,
         top_k: int = 3,
         explore: bool = True,
-        strict_quality: bool = True,
+        strict_quality: bool = False,
     ) -> None:
         self.gamma = gamma
         self.ucb_c = ucb_c
@@ -189,6 +189,11 @@ class Retriever:
         # measured cost-to-go. Terminal actions legitimately have no landing
         # node, so to_success is intentionally not required here.
         if self.strict_quality and not edge.steps_after_success:
+            return False
+        # A single success is a candidate, not production-grade advice. The
+        # frozen arm cannot explore-and-correct, so require at least two
+        # successful observations before promoting an edge to [推荐].
+        if self.strict_quality and edge.n_success < 2:
             return False
         # Thick but weak edges used to survive because the old gate only
         # rejected thin samples. In the frozen arm these edges are not

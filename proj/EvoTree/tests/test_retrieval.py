@@ -70,7 +70,7 @@ class TestDeadEdgesExcluded:
         # 只是不推荐，边本身仍在树里 —— 坑位知识不能因此丢失
         tree, node_id = _tree_with([("computer_use.click", False)])
         assert len(tree.out_edges(node_id)) == 1
-        assert Retriever()._build_recommendations(tree, node_id, 1) == []
+        assert Retriever(strict_quality=True)._build_recommendations(tree, node_id, 1) == []
 
 
 class TestUnexploredEdgesSurvive:
@@ -117,13 +117,17 @@ class TestShakyEdgesExcluded:
             "os.copy"
         ]
 
+    def test_single_success_is_candidate_only_in_strict_mode(self):
+        tree, node_id = _tree_with([("os.copy", True)])
+        assert Retriever(strict_quality=True)._build_recommendations(tree, node_id, 1) == []
+
     def test_thick_but_weak_is_filtered_in_strict_mode(self):
         # Frozen evaluation must not recommend a frequently failing edge.
         outcomes = [("os.thick", False)] * 3 + [("os.thick", True)] * 3
         outcomes += [("os.good", True)]
         tree, node_id = _tree_with(outcomes)
         assert "os.thick" not in _names(
-            Retriever()._build_recommendations(tree, node_id, 7)
+            Retriever(strict_quality=True)._build_recommendations(tree, node_id, 7)
         )
 
     def test_legacy_gate_can_be_used_for_ablation(self):
@@ -144,7 +148,7 @@ class TestShakyEdgesExcluded:
             to_sig=None,
         )
         node_id = tree.get_or_create_node(SIG).node_id
-        assert Retriever()._build_recommendations(tree, node_id, 1) == []
+        assert Retriever(strict_quality=True)._build_recommendations(tree, node_id, 1) == []
 
 
 class TestFrozenTurnsOffExploration:

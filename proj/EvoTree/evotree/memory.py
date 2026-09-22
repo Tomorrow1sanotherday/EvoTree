@@ -90,9 +90,14 @@ class EvoTreeMemory:
         if explore is None:
             explore = write_enabled
         if strict_quality is None:
-            strict_quality = os.environ.get("EVOTREE_STRICT_RETRIEVAL", "1") not in {
-                "0", "false", "no"
-            }
+            env_value = os.environ.get("EVOTREE_STRICT_RETRIEVAL")
+            if env_value is not None:
+                strict_quality = env_value not in {"0", "false", "no"}
+            else:
+                # Online learning may use a single successful observation as a
+                # candidate. Frozen evaluation has no chance to repair a bad
+                # recommendation, so it is strict by default.
+                strict_quality = not write_enabled
         self.retriever = Retriever(
             gamma=gamma,
             ucb_c=ucb_c,
