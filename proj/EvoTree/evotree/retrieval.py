@@ -101,11 +101,16 @@ class Retriever:
         ucb_c: float = DEFAULT_UCB_C,
         top_k: int = 3,
         explore: bool = True,
+        strict_quality: bool = True,
     ) -> None:
         self.gamma = gamma
         self.ucb_c = ucb_c
         self.top_k = top_k
         self.explore = explore
+        # Frozen evaluation cannot repair a bad recommendation by exploring it.
+        # Keep a compatibility switch for ablation experiments, but default to
+        # filtering thick, low-success-rate edges as well as thin coin flips.
+        self.strict_quality = strict_quality
 
     def retrieve(
         self,
@@ -179,6 +184,16 @@ class Retriever:
         if edge.n <= 0:
             return self.explore
         if edge_value(edge, self.gamma) <= 0:
+            return False
+        # A positive value is not enough: the edge must have at least one
+        # measured cost-to-go. Terminal actions legitimately have no landing
+        # node, so to_success is intentionally not required here.
+        if self.strict_quality and not edge.steps_after_success:
+            return False
+        # Thick but weak edges used to survive because the old gate only
+        # rejected thin samples. In the frozen arm these edges are not
+        # exploratory opportunities; they are stable-looking failure loops.
+        if self.strict_quality and edge.n >= 3 and success_rate(edge) <= 0.50:
             return False
         return not is_too_shaky(edge)
 

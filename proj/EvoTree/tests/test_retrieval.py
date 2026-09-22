@@ -117,15 +117,34 @@ class TestShakyEdgesExcluded:
             "os.copy"
         ]
 
-    def test_thick_but_weak_survives_ranking(self):
-        # n≥3 的平庸边不拦（证据充分，排序自然靠后），拦了反而丢真实信号
+    def test_thick_but_weak_is_filtered_in_strict_mode(self):
+        # Frozen evaluation must not recommend a frequently failing edge.
         outcomes = [("os.thick", False)] * 3 + [("os.thick", True)] * 3
         outcomes += [("os.good", True)]
         tree, node_id = _tree_with(outcomes)
-        # os.thick 进了推荐栏（只被排序压后，没有被门槛拦掉）
-        assert "os.thick" in _names(
+        assert "os.thick" not in _names(
             Retriever()._build_recommendations(tree, node_id, 7)
         )
+
+    def test_legacy_gate_can_be_used_for_ablation(self):
+        outcomes = [("os.thick", False)] * 3 + [("os.thick", True)] * 3
+        tree, node_id = _tree_with(outcomes)
+        assert "os.thick" in _names(
+            Retriever(strict_quality=False)._build_recommendations(
+                tree, node_id, state_visits=6
+            )
+        )
+
+    def test_success_edge_without_cost_to_go_is_filtered(self):
+        tree = ExperienceTree(template_id="t")
+        tree.upsert_step(
+            from_sig=SIG,
+            action=ActionTmpl(ActionKind.TOOL, "os.ambiguous"),
+            success=True,
+            to_sig=None,
+        )
+        node_id = tree.get_or_create_node(SIG).node_id
+        assert Retriever()._build_recommendations(tree, node_id, 1) == []
 
 
 class TestFrozenTurnsOffExploration:

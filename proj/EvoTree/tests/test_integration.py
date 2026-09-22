@@ -151,6 +151,32 @@ class TestRuntimeLifecycle:
             memory.distiller.distill_task("rename directory").template_id
         ) is None
 
+    def test_retrieval_events_are_written_as_jsonl(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("EVOTREE_RETRIEVAL_LOG", "1")
+        memory = EvoTreeMemory(root_dir=tmp_path)
+        runtime = EvoTreeRuntime(memory)
+        runtime.begin("rename directory")
+        runtime.before_model(observation(), ["os.rename_directory"])
+
+        event_path = tmp_path / "retrieval.jsonl"
+        assert event_path.exists()
+        event = json.loads(event_path.read_text(encoding="utf-8").splitlines()[0])
+        assert event["step"] == 0
+        assert event["tree"] == "miss"
+        assert event["candidate_tools"] == ["os.rename_directory"]
+
+    def test_quarantined_early_done_is_not_positive_experience(self):
+        memory = EvoTreeMemory()
+        runtime = EvoTreeRuntime(memory)
+        runtime.begin("rename directory")
+        runtime.after_action(observation(), action(), next_observation=observation("Files *"))
+        runtime.finish(
+            success=True,
+            metadata={"early_termination": True, "terminal_reason": "early_done"},
+        )
+        sheet = memory.read_cheatsheet("rename directory", observation())
+        assert sheet.recommendations == []
+
 
 class TestAdapterToMemoryBoundary:
     def test_real_trajectory_can_be_loaded_before_observations_are_enriched(self):

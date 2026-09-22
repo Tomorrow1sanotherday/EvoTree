@@ -24,7 +24,11 @@ EvoTree 不负责执行动作、不改变 agent 的决策权，只在模型调�
 from __future__ import annotations
 
 import logging
+import json
+import os
 from dataclasses import dataclass
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Mapping, Optional
 
 from .episode import Episode, EpisodeStep, RuntimeStep
@@ -50,6 +54,7 @@ class EvoTreeRuntime:
         self.memory = memory
         self.instruction: Optional[str] = None
         self._steps: list[RuntimeStep] = []
+        self._retrieval_step = 0
 
     @property
     def active(self) -> bool:
@@ -62,6 +67,7 @@ class EvoTreeRuntime:
             raise ValueError("instruction must not be empty")
         self.instruction = instruction
         self._steps.clear()
+        self._retrieval_step = 0
 
     def before_model(
         self,
@@ -80,7 +86,59 @@ class EvoTreeRuntime:
             reranked_tools=list(cheatsheet.reranked_tools),
         )
         self._log_retrieval(observation, candidate_tools, result)
+        self._write_retrieval_event(observation, candidate_tools, result)
+        self._retrieval_step += 1
         return result
+
+    def _write_retrieval_event(
+        self,
+        observation: dict[str, Any],
+        candidate_tools: Optional[list[str]],
+        result: BeforeModelResult,
+    ) -> None:
+        """Persist an audit-friendly retrieval event when memory is on disk.
+
+        Logging is often configured at WARNING by the runner, so INFO-only
+        diagnostics are insufficient for experiment forensics. JSONL keeps the
+        event structured without coupling the runtime to a logging setup.
+        """
+        root = getattr(self.memory, "root_dir", None)
+        # Keep frozen/read-only callers side-effect free by default. Real
+        # experiments opt in explicitly so the audit stream is available.
+        if root is None or os.environ.get("EVOTREE_RETRIEVAL_LOG", "") not in {
+            "1", "true", "yes"
+        }:
+            return
+        path = Path(root) / "retrieval.jsonl"
+        sig = self.memory.distiller.distill_state(observation)
+        template = self.memory.distiller.distill_task(self.instruction or "")
+        tree = self.memory.forest.get_tree(template.template_id)
+        node = tree.node_for_signature(sig) if tree is not None else None
+        event = {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "step": self._retrieval_step,
+            "phi": sig.key(),
+            "tau": template.template_id,
+            "tree": "hit" if tree is not None else "miss",
+            "node": "hit" if node is not None else "miss",
+            "recommendations": [
+                {
+                    "action": rec.action.name,
+                    "args": rec.action.args,
+                    "n": rec.n,
+                    "success_rate": rec.success_rate,
+                    "mean_steps_to_go": rec.mean_steps_to_go,
+                    "score": rec.score,
+                    "low_confidence": rec.low_confidence,
+                }
+                for rec in result.cheatsheet.recommendations
+            ],
+            "cautions": list(result.cheatsheet.cautions),
+            "candidate_tools": list(candidate_tools or []),
+        }
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(event, ensure_ascii=False) + "\n")
 
     def _log_retrieval(
         self,

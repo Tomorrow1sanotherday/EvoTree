@@ -23,6 +23,7 @@
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
@@ -63,6 +64,7 @@ class EvoTreeMemory:
         top_k: int = 3,
         write_enabled: bool = True,
         explore: Optional[bool] = None,
+        strict_quality: Optional[bool] = None,
     ) -> None:
         """
         Args:
@@ -87,8 +89,16 @@ class EvoTreeMemory:
         self.notes = self._load_notes()
         if explore is None:
             explore = write_enabled
+        if strict_quality is None:
+            strict_quality = os.environ.get("EVOTREE_STRICT_RETRIEVAL", "1") not in {
+                "0", "false", "no"
+            }
         self.retriever = Retriever(
-            gamma=gamma, ucb_c=ucb_c, top_k=top_k, explore=explore
+            gamma=gamma,
+            ucb_c=ucb_c,
+            top_k=top_k,
+            explore=explore,
+            strict_quality=strict_quality,
         )
         self.write_enabled = write_enabled
 
@@ -155,6 +165,18 @@ class EvoTreeMemory:
         tree = self.forest.get_or_create_tree(template.template_id)
         success_path = []
 
+        # Preserve known-bad trajectories as negative evidence, but never let
+        # an early DONE/timeout/API failure become positive experience merely
+        # because an outer harness supplied a truthy result.
+        terminal_reason = str(episode.metadata.get("terminal_reason", "")).lower()
+        quarantined = bool(episode.metadata.get("early_termination")) or terminal_reason in {
+            "early_done",
+            "timeout",
+            "api_error",
+            "container_error",
+        }
+        episode_success = episode.success and not quarantined
+
         for step in episode.steps:
             action = self.distiller.distill_action(step.raw_action)
             from_sig = self.distiller.distill_state(step.observation)
@@ -166,16 +188,16 @@ class EvoTreeMemory:
             edge = tree.upsert_step(
                 from_sig=from_sig,
                 action=action,
-                success=episode.success,
+                success=episode_success,
                 to_sig=to_sig,
                 note=step.note,
             )
-            if episode.success:
+            if episode_success:
                 success_path.append(edge)
             # 报错另记注意栏：不影响 p，但要让 agent 知道这一步有什么坑。
             self._record_note(action, step.note)
 
-        if episode.success:
+        if episode_success:
             tree.record_steps_after_success(success_path)
 
     # ------------------------------------------------------------------ #
