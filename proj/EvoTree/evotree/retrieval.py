@@ -243,10 +243,12 @@ class Retriever:
         """
         if edge.to_success is None:
             return
+        if edge.to_success == edge.from_id:
+            return  # A self-loop does not identify a subsequent task stage.
         succ = tree.node_by_id(edge.to_success)
         if succ is None:
             return
-        next_edges = tree.out_edges(succ.node_id)
+        next_edges = [e for e in tree.out_edges(succ.node_id) if self._is_recommendable(e)]
         if not next_edges:
             return
         best_next = max(
@@ -254,7 +256,11 @@ class Retriever:
             key=lambda e: edge_value(e, self.gamma),
         )
         rec.lookahead = best_next.action
-        rec.lookahead_hint = f"完成后 {best_next.action.name} 一步收尾"
+        rec.lookahead_hint = f"后续候选：{_fmt_action(best_next.action)}"
+        samples = [sample for sample in best_next.ranked_arg_samples()
+                   if sample.get("n_success", 0) > 0]
+        if samples:
+            rec.lookahead_hint += "；曾用：" + _fmt_arg_sample(samples[0])
 
     # ------------------------------------------------------------------ #
     # ③ 注意栏：查坑（只警告，永不推荐）
@@ -328,6 +334,10 @@ def _fmt_arg_sample(sample: dict) -> str:
                 break
         else:
             text = "; ".join(f"{k}={v}" for k, v in args.items())
+    # MCP examples need all the named values, rather than only a path/text
+    # field which might omit the source, destination, or range.
+    if any(key not in {"text", "keys", "command", "url", "path"} for key in args):
+        text = "; ".join(f"{k}={v}" for k, v in args.items())
     if not text:
         return ""
     n = sample.get("n", 0) or 0

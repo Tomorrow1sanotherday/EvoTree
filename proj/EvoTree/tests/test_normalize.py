@@ -62,6 +62,19 @@ class TestFilenameOverreach:
     def test_real_filenames_still_normalized(self):
         assert normalize_window("notes.md — Editor") == "<file> — Editor"
 
+    def test_libreoffice_filename_with_spaces_is_normalized_as_one_file(self):
+        assert normalize_window(
+            "Ch4 Video Effect.pptx - LibreOffice Impress"
+        ) == "<file> - LibreOffice Impress"
+        assert normalize_window(
+            "Another Presentation 2024.pptx - LibreOffice Impress *"
+        ) == "<file> - LibreOffice Impress *"
+
+    def test_libreoffice_documents_with_different_spaced_names_share_state_key(self):
+        assert normalize_window("Ch4 Video Effect.pptx - LibreOffice Impress") == normalize_window(
+            "lec17-gui-events.pptx - LibreOffice Impress"
+        )
+
 
 class TestIntegrationWithDistill:
     """归一化接进 distill 后，同类任务的状态主键真的对上了。"""

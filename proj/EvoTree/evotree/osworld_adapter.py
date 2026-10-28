@@ -20,7 +20,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping, Optional
 
-from .distill_osworld import OSWorldDistiller, extract_error_note
+from .distill_osworld import OSWorldDistiller, extract_error_note, parse_tool_calls
 from .episode import Episode, EpisodeStep
 
 ObservationFactory = Callable[[Mapping[str, Any], int], Mapping[str, Any]]
@@ -112,6 +112,24 @@ class OSWorldEpisodeAdapter:
         normalized = [dict(record) for record in records]
         if not normalized:
             raise ValueError("records must not be empty")
+        # Old runner logs repeat the entire reply on every executed action.
+        # Align by turn before dropping terminal records, so GUI replay cannot
+        # silently attribute every action to the first call in the reply.
+        groups = {}
+        for record in normalized:
+            prediction = record.get("prediction")
+            if isinstance(prediction, str) and prediction != "client error":
+                groups.setdefault((record.get("step_num"), prediction), []).append(record)
+        for (_, prediction), rows in groups.items():
+            calls = parse_tool_calls(prediction)
+            if len(calls) > 1 and len(calls) != len(rows):
+                raise ValueError("Incomplete multi-action turn cannot be replayed into memory")
+            if len(calls) == len(rows):
+                for call, record in zip(calls, rows):
+                    # The runner writes an explicit null when it has no
+                    # per-action annotation. Treat that as missing, too.
+                    if record.get("tool_call") is None:
+                        record["tool_call"] = call
         instruction = self._find_instruction(normalized)
         episode_success = self._resolve_success(normalized, success=success, score=score)
         steps = self._build_steps(normalized, observation_factory)
@@ -237,6 +255,8 @@ class OSWorldEpisodeAdapter:
             "prediction": record.get("prediction"),
             "action": record.get("action"),
             "info": record.get("info", {}),
+            "tool_call": record.get("tool_call"),
+            "gui_semantics": record.get("gui_semantics"),
         }
 
     @staticmethod
@@ -250,7 +270,8 @@ class OSWorldEpisodeAdapter:
         失败，不是 agent 在环境里执行的动作，不该进经验路径。）
         """
         return extract_error_note(
-            record.get("info"), record.get("exe_result")
+            record.get("info"), record.get("exe_result"),
+            tool_name=(record.get("tool_call") or {}).get("name", ""),
         )
 
     @staticmethod

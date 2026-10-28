@@ -65,6 +65,21 @@ def normalize_window(window: str) -> str:
     # 1) 记录是否有未保存标记（在抹文件名前先探测，避免被误伤）
     has_modified = _detect_modified(window)
 
+    # LibreOffice titles commonly contain filenames with spaces, for example
+    # ``Ch4 Video Effect.pptx - LibreOffice Impress``. The token regex below
+    # would only replace ``Effect.pptx``. Anchor the known application suffix
+    # first so the complete document title becomes one file placeholder.
+    office_match = re.match(
+        r"^.+?\s+(?P<separator>[-\u2013\u2014]\s+)(?P<app>LibreOffice\s+(?:Calc|Impress|Writer))(?:\s*[*\u25cf\u2022])?$",
+        window.strip(),
+        flags=re.IGNORECASE,
+    )
+    if office_match:
+        suffix = office_match.group("app")
+        if has_modified:
+            suffix += " *"
+        return "<file> " + office_match.group("separator") + suffix
+
     # 2) 把所有文件名替换成占位符（域名除外）
     normalized = _FILENAME.sub(_replace_filename, window)
 

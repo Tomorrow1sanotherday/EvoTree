@@ -93,6 +93,10 @@ class ExperienceTree:
         """遍历所有边（维护/分析用）。"""
         return iter(self._edges.values())
 
+    def all_nodes(self) -> Iterator[StateNode]:
+        """Read-only traversal for horizontal, cross-task state retrieval."""
+        return iter(self._id_to_node.values())
+
     # ------------------------------------------------------------------ #
     # 写入一步：四步 upsert 中的"逐步入账"（idea §0 写入第 3 步）
     # ------------------------------------------------------------------ #
@@ -198,6 +202,7 @@ class ExperienceTree:
                     "window": n.sig.window,
                     "dialog": n.sig.dialog,
                     "facts": n.sig.facts,
+                    "context": n.sig.context,
                     "visits": n.visits,
                 }
                 for n in self._id_to_node.values()
@@ -234,6 +239,7 @@ class ExperienceTree:
                 window=nd["window"],
                 dialog=nd.get("dialog"),
                 facts=nd.get("facts", {}),
+                context=nd.get("context", ""),
             )
             node = StateNode(node_id=nd["node_id"], sig=sig, visits=nd.get("visits", 0))
             tree._nodes[sig.key()] = node
@@ -315,6 +321,16 @@ class ExperienceForest:
         if self.root_dir is None:
             return None
         return self.root_dir / "memory" / template_id / "tree.json"
+
+    def all_trees(self) -> Iterator[ExperienceTree]:
+        """Include persisted trees not yet touched by a task-level lookup."""
+        identifiers = set(self._trees)
+        if self.root_dir is not None:
+            identifiers.update(p.parent.name for p in (self.root_dir / "memory").glob("*/tree.json"))
+        for template_id in sorted(identifiers):
+            tree = self.get_tree(template_id)
+            if tree is not None:
+                yield tree
 
     def save_all(self) -> None:
         """把所有树持久化到磁盘。"""

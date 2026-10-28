@@ -1,0 +1,16 @@
+diff --git a/mm_agents/owl_agent.py b/mm_agents/owl_agent.py
+--- a/mm_agents/owl_agent.py
++++ b/mm_agents/owl_agent.py
+@@ -875,9 +875,10 @@
+ 
+                 else:
+                     # OpenAI
+-                    from filelock import FileLock
++                    from filelock import FileLock, SoftFileLock
+                     import os
+-                    with FileLock(os.environ["OSWORLD_MODEL_REQUEST_LOCK"], timeout=600):
++                    request_lock = SoftFileLock if os.getenv("OSWORLD_MODEL_REQUEST_LOCK_MODE") == "soft" else FileLock
++                    with request_lock(os.environ["OSWORLD_MODEL_REQUEST_LOCK"], timeout=600):
+                         response = self.llm_client.chat.completions.create(
+                             model=model_name,
+                             messages=messages,

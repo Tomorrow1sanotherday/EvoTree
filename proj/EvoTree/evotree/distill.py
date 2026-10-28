@@ -103,6 +103,7 @@ class RuleBasedDistiller:
             window=normalize_window(str(observation.get("window", ""))),
             dialog=observation.get("dialog"),
             facts=dict(observation.get("facts", {})),
+            context=str(observation.get("state_context", "")),
         )
 
     # ---- α ---- #

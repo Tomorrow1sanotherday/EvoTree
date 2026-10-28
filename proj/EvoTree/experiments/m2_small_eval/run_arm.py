@@ -12,6 +12,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import uuid
 from datetime import datetime, timezone
 from typing import Iterable, Mapping
 
@@ -83,7 +84,7 @@ def build_command(
         "--trial-id",
         "0",
         "--domain",
-        "os",
+        "all",
     ]
     if arm != "baseline":
         command.extend(
@@ -117,13 +118,44 @@ def prepare_arm(output_root: Path, arm: str, seed_memory: Path | None) -> Path:
     return arm_root
 
 
+def prepare_baseline_resume(output_root: Path, manifest: Path, model: str) -> Path:
+    """Preserve scored episodes and archive incomplete baseline attempts."""
+    from .parallel_pilot import validate_executed_actions
+    arm_root = output_root / 'baseline'
+    if not arm_root.is_dir():
+        raise ValueError('Baseline resume requires an existing baseline directory')
+    pending = []
+    for domain, ids in json.loads(manifest.read_text(encoding='utf-8')).items():
+        for task in ids:
+            path = arm_root / 'results/mcp/screenshot' / model / '0' / domain / task
+            if not (path / 'result.txt').exists():
+                if path.exists():
+                    pending.append((domain, task, path))
+                continue
+            records = [json.loads(line) for line in (path/'traj.jsonl').read_text(encoding='utf-8').splitlines() if line.strip()]
+            if any('Error' in r or 'error' in r or str(r.get('prediction','')).strip().lower()=='client error' for r in records):
+                raise ValueError(f'Refusing to reuse an invalid scored episode: {path}')
+            validate_executed_actions(records, path)
+    history = arm_root / 'resume-history' / uuid.uuid4().hex
+    history.mkdir(parents=True)
+    for domain, task, path in pending:
+        target = history / domain / task
+        target.parent.mkdir(parents=True, exist_ok=True)
+        path.rename(target)
+    if (arm_root/'run.json').exists():
+        shutil.copy2(arm_root/'run.json', history/'run.json')
+    return arm_root
+
+
 def safe_container_name(label: str, arm: str) -> str:
     normalized = re.sub(r"[^a-z0-9-]+", "-", label.lower()).strip("-")
     normalized = normalized[:40] or "run"
     return f"evo-m2-{normalized}-{arm}"
 
 
-def runtime_environment(base: Mapping[str, str], container_name: str) -> dict[str, str]:
+def runtime_environment(
+    base: Mapping[str, str], container_name: str, worker_slot: int | None = None
+) -> dict[str, str]:
     env = dict(base)
     env.setdefault("DOCKER_HOST", DEFAULT_PODMAN_SOCKET)
     env.setdefault("HF_ENDPOINT", DEFAULT_HF_ENDPOINT)
@@ -131,6 +163,19 @@ def runtime_environment(base: Mapping[str, str], container_name: str) -> dict[st
     env.setdefault("OSWORLD_PODMAN", "1")
     env.setdefault("OSWORLD_MCP_INJECT", "1")
     env["EVO_CONTAINER_NAME"] = container_name
+    if worker_slot is not None:
+        if not 0 <= worker_slot < 16:
+            raise ValueError("worker slot must be between 0 and 15")
+        # Each one-env runner owns five disjoint 100-port ranges. This avoids
+        # both fixed container names and check-before-bind races across workers.
+        port_base = 30000 + worker_slot * 1000
+        for index, service in enumerate(("SERVER", "CHROMIUM", "VLC", "VNC", "MONITOR")):
+            env[f"OSWORLD_{service}_PORT_BASE"] = str(port_base + index * 100)
+        env["OSWORLD_PORT_RANGE_SIZE"] = "100"
+        if base.get("OSWORLD_PORT_LOCK_DIR"):
+            env["OSWORLD_PORT_LOCK_FILE"] = str(
+                Path(base["OSWORLD_PORT_LOCK_DIR"]) / f"slot-{worker_slot}.lock"
+            )
     return env
 
 
@@ -161,7 +206,9 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--api-url", default=os.environ.get("OSWORLD_API_URL", ""))
     parser.add_argument("--max-steps", type=int, default=6)
     parser.add_argument("--label", default="smoke")
+    parser.add_argument("--worker-slot", type=int, choices=range(16))
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--resume-baseline", action="store_true")
     return parser.parse_args(argv)
 
 
@@ -186,18 +233,22 @@ def main(argv: Iterable[str] | None = None) -> int:
         print(f"EVO_CONTAINER_NAME={container_name}")
         return 0
 
-    env = runtime_environment(os.environ, container_name)
+    env = runtime_environment(os.environ, container_name, args.worker_slot)
     require_runtime_settings(env, args.model, args.api_url)
     if not args.runner_root.joinpath("run_multienv_e2e.py").is_file():
         raise ValueError(f"Invalid runner root: {args.runner_root}")
     if not args.task_manifest.is_file():
         raise ValueError(f"Missing task manifest: {args.task_manifest}")
 
-    arm_root = prepare_arm(
-        args.output_root.resolve(),
-        args.arm,
-        args.seed_memory.resolve() if args.seed_memory else None,
-    )
+    if args.resume_baseline:
+        if args.arm != 'baseline':
+            raise ValueError('Partial online memory cannot be resumed safely')
+        arm_root = prepare_baseline_resume(args.output_root.resolve(), args.task_manifest, args.model)
+    else:
+        arm_root = prepare_arm(
+            args.output_root.resolve(), args.arm,
+            args.seed_memory.resolve() if args.seed_memory else None,
+        )
     metadata = {
         "arm": args.arm,
         "container_name": container_name,

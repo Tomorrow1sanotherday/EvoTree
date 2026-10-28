@@ -1,0 +1,92 @@
+diff --git a/mm_agents/owl_agent.py b/mm_agents/owl_agent.py
+--- a/mm_agents/owl_agent.py
++++ b/mm_agents/owl_agent.py
+@@ -156,7 +156,31 @@
+     pattern = r"(?<!\\)'"
+     return re.sub(pattern, r"\\'", text)
+ 
++
+ def parse_action_fncall_id(text, image_path, height, width, model_name):
++    """Parse each complete action, including fenced JSON, in response order."""
++    matches = re.findall(r"<tool_call>\s*(.*?)\s*</tool_call>", text, flags=re.S)
++    decoder = json.JSONDecoder()
++    calls = []
++    candidates = matches or [text]
++    for candidate in candidates:
++        start = candidate.find("{")
++        if start < 0:
++            continue
++        value, _ = decoder.raw_decode(candidate[start:])
++        if not isinstance(value, dict) or "name" not in value or "arguments" not in value:
++            continue
++        thought = re.search(r"<thinking>(.*?)</thinking>", text, flags=re.S)
++        conclusion = re.search(r"<conclusion>(.*?)</conclusion>", text, flags=re.S)
++        normalized = (("<thinking>" + thought.group(1) + "</thinking>") if thought else "")
++        normalized += "<tool_call>" + json.dumps(value) + "</tool_call>"
++        normalized += (("<conclusion>" + conclusion.group(1) + "</conclusion>") if conclusion else "")
++        calls.extend(_parse_single_action_fncall_id(normalized, image_path, height, width, model_name))
++    if not calls:
++        raise ValueError("Response did not contain a complete tool call")
++    return calls
++
++def _parse_single_action_fncall_id(text, image_path, height, width, model_name):
+     thought = ""
+     if "<thinking>" in text and "</thinking>" in text:
+         thought = text.split("<thinking>")[-1].split("</thinking>")[0]
+@@ -540,7 +564,7 @@
+         self.infer_mode = self.runtime_conf["infer_mode"]
+         self.input_swap = self.runtime_conf["input_swap"]
+ 
+-        self.llm_client = OpenAI(base_url=api_url, api_key=api_key)
++        self.llm_client = OpenAI(base_url=api_url, api_key=api_key, timeout=90, max_retries=1)
+         dashscope.api_key = api_key
+ 
+         self.thoughts = []
+@@ -845,16 +869,25 @@
+ 
+                 else:
+                     # OpenAI
+-                    response = self.llm_client.chat.completions.create(
+-                        model=model_name,
+-                        messages=messages,
+-                        max_tokens=2048,
+-                        temperature=self.temperature,
+-                        top_p=self.top_p,
+-                        **({"reasoning_effort": "none"} if model_name.startswith("gpt-")
+-                           else {"extra_body": {"repetition_penalty": 1.05}}),
+-                    )
++                    from filelock import FileLock
++                    import os
++                    with FileLock(os.environ["OSWORLD_MODEL_REQUEST_LOCK"], timeout=600):
++                        response = self.llm_client.chat.completions.create(
++                            model=model_name,
++                            messages=messages,
++                            max_tokens=2048,
++                            temperature=self.temperature,
++                            top_p=self.top_p,
++                            **({"reasoning_effort": "none"} if model_name.startswith("gpt-")
++                               else {"extra_body": {"repetition_penalty": 1.05}}),
++                        )
+                     prediction = response.choices[0].message.content
++                    if not prediction and response.choices[0].message.tool_calls:
++                        prediction = "\n".join(
++                            "<tool_call>" + json.dumps({"name": call.function.name,
++                            "arguments": json.loads(call.function.arguments)}) + "</tool_call>"
++                            for call in response.choices[0].message.tool_calls
++                        )
+                 
+                 parsed_responses = self.customize_action_parser(
+                     prediction,
+@@ -868,6 +901,12 @@
+             except Exception as e:
+                 # print(f"Error when fetching response from client, with response: {response}")
+                 print(f"Error when fetching response from client, with error: {e}")
++                if prediction:
++                    from pathlib import Path
++                    import os
++                    Path(os.environ["OSWORLD_MCP_ASSET_DIR"]).parent.joinpath(
++                        f"parse-response-{os.getpid()}.txt"
++                    ).write_text(str(prediction), encoding="utf-8")
+                 prediction = None
+                 try_times -= 1
+                 import time

@@ -1,0 +1,26 @@
+diff --git a/mm_agents/owl_agent.py b/mm_agents/owl_agent.py
+--- a/mm_agents/owl_agent.py
++++ b/mm_agents/owl_agent.py
+@@ -851,7 +851,8 @@
+                         max_tokens=2048,
+                         temperature=self.temperature,
+                         top_p=self.top_p,
+-                        extra_body={"repetition_penalty": 1.05},
++                        **({"reasoning_effort": "none"} if model_name.startswith("gpt-")
++                           else {"extra_body": {"repetition_penalty": 1.05}}),
+                     )
+                     prediction = response.choices[0].message.content
+                 
+diff --git a/desktop_env/desktop_env.py b/desktop_env/desktop_env.py
+--- a/desktop_env/desktop_env.py
++++ b/desktop_env/desktop_env.py
+@@ -451,7 +451,8 @@
+             if tool_name in tool_list:
+                 app_info = None
+                 class_name = tool_list[tool_name]
+-                command = f"from {tool_name} import *; "
++                command = "import sys; sys.path.insert(0, '/home/user/mcp_server/tools/package'); sys.path.append('/usr/lib/python3/dist-packages'); "
++                command += f"from {tool_name} import *; "
+                 command += f"{class_name}.env_info(); "
+                 command += f"{class_name}.print_result();"
+                 app_info = self.controller.execute_python_command(command)['output'].strip()

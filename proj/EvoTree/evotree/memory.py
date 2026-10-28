@@ -11,9 +11,8 @@
     write_episode(episode)
         每轮跑完调：按边级成败写整条路径，按轮级成败记 cost-to-go。
 
-两个成败不是一回事（详见 ``episode`` 模块）：边的 ``n_success`` 由
-``EpisodeStep.action_success``（这次调用有没有报错）决定，cost-to-go 才由
-``Episode.success``（整轮任务成没成）决定。
+正式 ``write_episode`` 路径的 ``n_success`` 与 cost-to-go 都按整轮任务结果
+统计；单步调用有没有报错另记 notes，不把协议调用成功当成任务成功。
 
 旧版 ``write(instruction, list[Step])`` 仍保留，用于兼容早期调用。
 
@@ -24,6 +23,7 @@
 from __future__ import annotations
 
 import os
+import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
@@ -36,6 +36,9 @@ from .retrieval import Cheatsheet, Retriever, render_cheatsheet
 from .scoring import DEFAULT_GAMMA, DEFAULT_UCB_C
 from .template_lib import TemplateLibrary
 from .types import ActionTmpl, StateSig
+from .dual_retrieval import (DualCheatsheet, TaskExperience, WorkflowStep, action_stage,
+                             retrieve_dual, render_dual_cheatsheet)
+from .situation_summary import observation_evidence, previous_action
 
 
 @dataclass
@@ -65,6 +68,10 @@ class EvoTreeMemory:
         write_enabled: bool = True,
         explore: Optional[bool] = None,
         strict_quality: Optional[bool] = None,
+        retrieval_mode: str = "legacy",
+        prompt_budget_chars: int = 6000,
+        situation_backend: Any = None,
+        task_relevance_backend: Any = None,
     ) -> None:
         """
         Args:
@@ -106,6 +113,22 @@ class EvoTreeMemory:
             strict_quality=strict_quality,
         )
         self.write_enabled = write_enabled
+        if retrieval_mode not in {"legacy", "task", "state", "dual", "dual_unfiltered", "dual_summary"}:
+            raise ValueError("Unknown retrieval mode: " + retrieval_mode)
+        if retrieval_mode == 'dual_summary' and situation_backend is None:
+            raise ValueError('dual_summary requires an explicit situation_backend')
+        self.situation_backend = situation_backend
+        self.task_relevance_backend = task_relevance_backend
+        self.retrieval_mode = retrieval_mode
+        self.prompt_budget_chars = prompt_budget_chars
+        self.task_experiences: dict[str, list[TaskExperience]] = {}
+        if self.root_dir is not None:
+            path = self.root_dir / "memory" / "task_experiences.json"
+            if path.exists():
+                self.task_experiences = {
+                    key: [TaskExperience.from_dict(row) for row in rows]
+                    for key, rows in json.loads(path.read_text(encoding="utf-8")).items()
+                }
 
     # ------------------------------------------------------------------ #
     # read：每步动手前拼小抄
@@ -118,6 +141,37 @@ class EvoTreeMemory:
     ) -> str:
         """查森林拼小抄，返回可注入 prompt 的文本。空则返回空串。"""
         sheet = self.read_cheatsheet(instruction, observation, candidate_tools)
+        return self.render(sheet)
+
+    def lookup_task(self, instruction: str):
+        """Resolve a query without registering or generalizing stored templates."""
+        library = getattr(self.distiller, "template_library", None)
+        if isinstance(library, TemplateLibrary):
+            return TemplateLibrary.from_dict(library.to_dict()).match(instruction)
+        return self.distiller.distill_task(instruction)
+
+    def read_dual_cheatsheet(self, instruction: str, observation: dict[str, Any],
+                            candidate_tools: Optional[list[str]] = None, *,
+                            task_enabled: bool = True, state_enabled: bool = True,
+                            enforce_state_conditions: bool = True,
+                            use_situation_summaries: bool = False,
+                            relax_action_stage: bool = True,
+                            require_summary_compatible: bool = True,
+                            require_compatible_all: bool = True,
+                            task_relevance_backend: Any = None) -> DualCheatsheet:
+        return retrieve_dual(self, instruction, observation, candidate_tools,
+                             task_enabled=task_enabled, state_enabled=state_enabled,
+                             enforce_state_conditions=enforce_state_conditions,
+                             use_situation_summaries=use_situation_summaries,
+                             relax_action_stage=relax_action_stage,
+                             require_summary_compatible=require_summary_compatible,
+                             require_compatible_all=require_compatible_all,
+                             task_relevance_backend=(task_relevance_backend if task_relevance_backend is not None
+                                                     else self.task_relevance_backend))
+
+    def render(self, sheet: Cheatsheet) -> str:
+        if isinstance(sheet, DualCheatsheet):
+            return render_dual_cheatsheet(sheet, self.prompt_budget_chars)
         return render_cheatsheet(sheet)
 
     def read_cheatsheet(
@@ -127,6 +181,12 @@ class EvoTreeMemory:
         candidate_tools: Optional[list[str]] = None,
     ) -> Cheatsheet:
         """同 read，但返回结构化的 Cheatsheet（便于分析/测试）。"""
+        if self.retrieval_mode != "legacy":
+            return self.read_dual_cheatsheet(instruction, observation, candidate_tools,
+                                            task_enabled=self.retrieval_mode in {"task", "dual", "dual_unfiltered", "dual_summary"},
+                                            state_enabled=self.retrieval_mode in {"state", "dual", "dual_unfiltered", "dual_summary"},
+                                            enforce_state_conditions=self.retrieval_mode not in {"dual_unfiltered", "dual_summary"},
+                                            use_situation_summaries=self.retrieval_mode == 'dual_summary')
         template = self.distiller.distill_task(instruction)
         current_sig = self.distiller.distill_state(observation)
         tree = self.forest.get_tree(template.template_id)  # 没见过 → None（冷启动）
@@ -181,6 +241,30 @@ class EvoTreeMemory:
             "container_error",
         }
         episode_success = episode.success and not quarantined
+
+        # Store measured order separately from graph aggregation: repeated
+        # actions and loops cannot be reconstructed reliably from edge counts.
+        if episode_success:
+            stage = "start"
+            workflow = []
+            prefix = []
+            for step in episode.steps:
+                action = self.distiller.distill_action(step.raw_action)
+                summary = None
+                if self.retrieval_mode == 'dual_summary':
+                    summary = self.situation_backend.summarize(episode.instruction, step.observation, prefix).to_dict()
+                workflow.append(WorkflowStep(action, self.distiller.distill_state(step.observation),
+                                             str(step.observation.get("state_stage", stage)), step.note,
+                                             observation_evidence(step.observation), summary))
+                stage = action_stage(action, step.action_success and step.note is None)
+                prefix.append(previous_action(action, step.action_success and step.note is None))
+            history = TaskExperience(template.template_id, episode.instruction, workflow, episode.source)
+            histories = self.task_experiences.setdefault(template.template_id, [])
+            # Deduplicate identical evidence, keeping a small deterministic bank.
+            if history.to_dict() not in [item.to_dict() for item in histories]:
+                histories.append(history)
+                histories.sort(key=lambda item: len(item.steps))
+                del histories[3:]
 
         for step in episode.steps:
             action = self.distiller.distill_action(step.raw_action)
@@ -283,6 +367,11 @@ class EvoTreeMemory:
             return
         self.forest.save_all()
         self.notes.save(self._notes_path())
+        path = self.root_dir / "memory" / "task_experiences.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({key: [item.to_dict() for item in rows]
+                                   for key, rows in self.task_experiences.items()},
+                                  ensure_ascii=False, indent=2), encoding="utf-8")
         library = getattr(self.distiller, "template_library", None)
         if isinstance(library, TemplateLibrary):
             library.save(self._templates_path())

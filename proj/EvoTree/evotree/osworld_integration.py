@@ -17,12 +17,15 @@
 from __future__ import annotations
 
 import re
+import hashlib
+import json
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any, Optional
 
-from .distill_osworld import GUI_TOOL_NAME, OSWorldDistiller, extract_error_note
+from .distill_osworld import GUI_TOOL_NAME, OSWorldDistiller, extract_error_note, parse_tool_calls
 from .integration import EvoTreeRuntime, inject_cheatsheet
 from .memory import EvoTreeMemory
+from .dual_retrieval import action_stage
 
 
 ObservationMapper = Callable[[Mapping[str, Any]], Mapping[str, Any]]
@@ -172,13 +175,13 @@ def _is_client_error(raw_action: Mapping[str, Any]) -> bool:
     return OSWorldDistiller.is_parse_error(raw_action)
 
 
-def _note_from_step(info: Any, next_observation: Mapping[str, Any]) -> Optional[str]:
+def _note_from_step(info: Any, next_observation: Mapping[str, Any], tool_name: str = "") -> Optional[str]:
     """这一步有没有报错。委托给 distill_osworld 的单一判据实现。
 
     返回非 None 即表示这条边这次执行失败（edge-level failure），同时这段文本
     会作为坑位笔记进入边的 notes 与 global_notes。
     """
-    return extract_error_note(info, next_observation)
+    return extract_error_note(info, next_observation, tool_name=tool_name)
 
 
 class EvoTreeAgentWrapper:
@@ -191,14 +194,19 @@ class EvoTreeAgentWrapper:
         *,
         use_evotree: bool = True,
         observation_mapper: ObservationMapper = build_observation,
+        gui_annotator: Optional[Callable] = None,
     ) -> None:
         self.agent = agent
         self.runtime = runtime
         self.use_evotree = use_evotree
         self.observation_mapper = observation_mapper
+        self.gui_annotator = gui_annotator
         self.last_before_model = None
         self._instruction: Optional[str] = None
         self._pending: list[dict[str, Any]] = []
+        self._previous_action = "start"
+        self._previous_stage = "start"
+        self._copy_call_observed = False
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self.agent, name)
@@ -206,6 +214,9 @@ class EvoTreeAgentWrapper:
     def reset(self, *args: Any, **kwargs: Any) -> Any:
         self._instruction = None
         self._pending.clear()
+        self._previous_action = "start"
+        self._previous_stage = "start"
+        self._copy_call_observed = False
         self.last_before_model = None
         return self.agent.reset(*args, **kwargs)
 
@@ -216,8 +227,11 @@ class EvoTreeAgentWrapper:
         if not self.runtime.active or self._instruction != instruction:
             self.runtime.begin(instruction)
             self._instruction = instruction
+            self._previous_action = "start"
+            self._previous_stage = "start"
+            self._copy_call_observed = False
 
-        mapped = self.observation_mapper(obs)
+        mapped = self.memory_observation(obs)
         # 用 available_tool_names 而不是 candidate_tool_names：注意栏要查的是
         # agent 真正能调的工具，而 computer_use 不在 obs["tool_list"] 里。
         # 重排不受影响 —— reorder_tool_list 只认 tool_list 里真实存在的项。
@@ -243,13 +257,71 @@ class EvoTreeAgentWrapper:
             if len(result) >= 3:
                 messages = result[2]
         if isinstance(actions, Sequence) and not isinstance(actions, (str, bytes)):
+            calls = parse_tool_calls(response) if isinstance(response, str) else []
+            if calls and len(calls) != len(actions):
+                raise ValueError("Parsed tool calls and executed actions are not aligned")
             self._pending = [
-                {"prediction": response, "action": action, "messages": messages}
-                for action in actions
+                {"prediction": response, "action": action, "messages": messages,
+                 **({"tool_call": calls[index]} if calls else {})}
+                for index, action in enumerate(actions)
             ]
         else:
             self._pending = []
         return result
+
+    def memory_observation(self, obs: Mapping[str, Any]) -> dict[str, Any]:
+        mapped = dict(self.observation_mapper(obs))
+        mapped["state_stage"] = self._previous_stage
+        mapped["state_progress"] = {"copy_call_observed": self._copy_call_observed}
+        # Real OSWorld observations contain app_info. Use existing structured
+        # data and the preceding actual action to distinguish task stages;
+        # no additional model calls or VM queries are required.
+        if "app_info" in obs:
+            if self._previous_action == "start":
+                # The task template already identifies the initial task. Window
+                # registration is asynchronous: its first frame may report
+                # unknown or the real app for exactly the same reset snapshot.
+                # Canonicalize only the memory root, never the model's obs.
+                mapped.update(app="osworld-task-start", window="", dialog=None,
+                              state_context="start")
+                return mapped
+            info = obs.get("app_info")
+            if isinstance(info, str):
+                try:
+                    # Calc.env_info prints its JSON, and the runner then calls
+                    # print_result, producing the same object twice on stdout.
+                    decoder = json.JSONDecoder()
+                    remaining = info.strip()
+                    values = []
+                    while remaining:
+                        value, end = decoder.raw_decode(remaining)
+                        values.append(value)
+                        remaining = remaining[end:].strip()
+                    info = values[0] if values and all(v == values[0] for v in values) else None
+                except ValueError:
+                    info = None
+            structured = {}
+            if isinstance(info, Mapping):
+                structured = {key: info[key] for key in ("name", "active_sheet", "sheets", "data", "row_count", "column_count",
+                              "schema", "scope", "current_slide_index", "slides") if key in info}
+            encoded = json.dumps(structured, ensure_ascii=False, sort_keys=True, default=str)
+            mapped["state_context"] = self._previous_action + ":" + hashlib.sha256(encoded.encode()).hexdigest()[:16]
+        return mapped
+
+    def record_action_context(self, raw: Mapping[str, Any], note: Optional[str]) -> None:
+        action = self.runtime.memory.distiller.distill_action(dict(raw))
+        # A description enriches advice, not the observed environment state.
+        # Keep signatures compatible across annotated and unannotated replay.
+        args = {key: value for key, value in action.args.items() if key != "target"}
+        payload = json.dumps([action.name, args, note is None], sort_keys=True, ensure_ascii=False)
+        self._previous_action = hashlib.sha256(payload.encode()).hexdigest()[:16]
+        self._previous_stage = action_stage(action, note is None)
+        if action.name == "libreoffice_calc2.copy_cells_between_sheets":
+            # This is a record of an error-free call, not proof of correct data.
+            self._copy_call_observed = note is None
+        elif action.name not in {"libreoffice_calc.env_info", "libreoffice_calc.save",
+                                "libreoffice_calc.switch_active_sheet"}:
+            self._copy_call_observed = False
 
     def consume_raw_action(self, action: Any) -> dict[str, Any]:
         """返回与下一次 env.step 对应的模型响应和原始环境动作。"""
@@ -280,6 +352,7 @@ class EvoTreeEnvWrapper:
         self.observation_mapper = observation_mapper
         self._last_observation: Optional[Mapping[str, Any]] = None
         self.last_score: Optional[float] = None
+        self.last_raw_action: Optional[dict[str, Any]] = None
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self.env, name)
@@ -287,7 +360,11 @@ class EvoTreeEnvWrapper:
     def reset(self, *args: Any, **kwargs: Any) -> Any:
         self._last_observation = None
         self.last_score = None
+        self.last_raw_action = None
         self.agent_wrapper._pending.clear()
+        self.agent_wrapper._previous_action = "start"
+        self.agent_wrapper._previous_stage = "start"
+        self.agent_wrapper._copy_call_observed = False
         observation = self.env.reset(*args, **kwargs)
         # 首帧也要记住：runner 常写 `obs = env.reset()` 而不再调 _get_obs()，
         # 那样第一个动作的 before 观测就是 None，整步会被静默丢弃。
@@ -314,16 +391,26 @@ class EvoTreeEnvWrapper:
             return result
 
         raw_action = self.agent_wrapper.consume_raw_action(action)
+        self.last_raw_action = raw_action
         if _is_terminal_action(raw_action) or _is_client_error(raw_action):
             return result
+        if self.agent_wrapper.gui_annotator is not None:
+            annotation = self.agent_wrapper.gui_annotator(raw_action, before, next_observation)
+            if annotation is not None:
+                raw_action["gui_semantics"] = annotation
         info = result[3] if len(result) > 3 else {}
         # 报错即这条边这次失败：edge-level 成败在动作执行完就已知，不必等
         # 整轮 evaluator 结果（idea §0 写入第 3 步）。
-        note = _note_from_step(info, next_observation)
+        call = raw_action.get("tool_call") or {}
+        executed = raw_action.get("action")
+        tool_name = executed.get("action_type", "") if isinstance(executed, Mapping) else call.get("name", "")
+        note = _note_from_step(info, next_observation, tool_name)
+        mapped_before = self.agent_wrapper.memory_observation(before)
+        self.agent_wrapper.record_action_context(raw_action, note)
         self.runtime.after_action(
-            dict(self.observation_mapper(before)),
+            mapped_before,
             raw_action,
-            next_observation=dict(self.observation_mapper(next_observation)),
+            next_observation=self.agent_wrapper.memory_observation(next_observation),
             note=note,
             action_success=note is None,
             metadata={"env_info": info},
@@ -345,6 +432,7 @@ def wrap_osworld(
     *,
     use_evotree: bool = True,
     observation_mapper: ObservationMapper = build_observation,
+    gui_annotator: Optional[Callable] = None,
 ) -> tuple[Any, Any, Optional[EvoTreeRuntime]]:
     """构造可直接传给 OSWorld runner 的 ``(agent, env, runtime)``。
 
@@ -356,7 +444,8 @@ def wrap_osworld(
         return agent, env, None
     runtime = EvoTreeRuntime(memory)
     agent_wrapper = EvoTreeAgentWrapper(
-        agent, runtime, use_evotree=True, observation_mapper=observation_mapper
+        agent, runtime, use_evotree=True, observation_mapper=observation_mapper,
+        gui_annotator=gui_annotator,
     )
     env_wrapper = EvoTreeEnvWrapper(
         env,

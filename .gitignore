@@ -21,3 +21,7 @@ ref/
 
 # Scratch: intermediate patches and one-off probes, superseded by scripts/
 temp/
+
+# Generated research exports kept outside the source distribution
+doc/**/exp*_trajectory_analysis.html
+*exp2_data.json

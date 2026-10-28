@@ -1,0 +1,20 @@
+diff --git a/run_multienv_e2e.py b/run_multienv_e2e.py
+--- a/run_multienv_e2e.py
++++ b/run_multienv_e2e.py
+@@ -216,14 +216,14 @@
+                     shared_scores,
+                 )
+             except Exception as e:
+-                logger.error(f"Exception in Env{env_idx+1} {domain}/{example_id}: {e}")
++                logger.exception(f"Exception in Env{env_idx+1} {domain}/{example_id}")
+                 env.controller.end_recording(
+                     os.path.join(example_result_dir, "recording.mp4")
+                 )
+                 with open(os.path.join(example_result_dir, "traj.jsonl"), "a") as f:
+                     f.write(
+                         json.dumps(
+-                            {"Error": f"Time limit exceeded in {domain}/{example_id}"}
++                            {"Error": f"{type(e).__name__}: {e}", "domain": domain, "task_id": example_id}
+                         )
+                     )
+                     f.write("\n")

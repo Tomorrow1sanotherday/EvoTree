@@ -1,0 +1,30 @@
+diff --git a/desktop_env/providers/docker/provider.py b/desktop_env/providers/docker/provider.py
+--- a/desktop_env/providers/docker/provider.py
++++ b/desktop_env/providers/docker/provider.py
+@@ -36,7 +36,7 @@
+         # QEMU runs in the host PID namespace in the shared-server smoke setup.
+         # Keep exact process identities so teardown cannot touch another job.
+         self._owned_qemu = {}
+-        self.environment = {"DISK_SIZE": "32G", "RAM_SIZE": "4G", "CPU_CORES": "4"}  # Modify if needed
++        self.environment = {"DISK_SIZE": "32G", "DISK_FMT": "qcow2", "ALLOCATE": "N", "RAM_SIZE": "4G", "CPU_CORES": "4"}  # Modify if needed
+ 
+         temp_dir = Path(os.getenv("TEMP") if platform.system() == "Windows" else "/tmp")
+         self.lock_file = Path(os.getenv("OSWORLD_PORT_LOCK_FILE", str(temp_dir / "docker_port_allocation.lck")))
+@@ -522,7 +522,7 @@
+                 try:
+                     self._remember_owned_qemu()
+                     self.container.stop()
+-                    self.container.remove()
++                    self.container.remove(v=True)
+                 except:
+                     pass
+                 finally:
+@@ -547,7 +547,7 @@
+             try:
+                 self._remember_owned_qemu()
+                 self.container.stop()
+-                self.container.remove()
++                self.container.remove(v=True)
+                 time.sleep(WAIT_TIME)
+             except Exception as e:
+                 logger.error(f"Error stopping container: {e}")

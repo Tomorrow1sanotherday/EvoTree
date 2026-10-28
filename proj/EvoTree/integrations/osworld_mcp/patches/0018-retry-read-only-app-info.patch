@@ -1,0 +1,12 @@
+--- a/desktop_env/desktop_env.py
++++ b/desktop_env/desktop_env.py
+@@ -455,7 +455,8 @@
+                 command += f"from {tool_name} import *; "
+                 command += f"{class_name}.env_info(); "
+                 command += f"{class_name}.print_result();"
+-                app_info = self.controller.execute_python_command(command)['output'].strip()
++                from evotree.observation_io import read_python_output
++                app_info = read_python_output(self.controller, command)
+             else:
+                 app_info = None
+         else:

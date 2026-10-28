@@ -1,0 +1,12 @@
+diff --git a/mm_agents/owl_agent.py b/mm_agents/owl_agent.py
+--- a/mm_agents/owl_agent.py
++++ b/mm_agents/owl_agent.py
+@@ -325,7 +325,7 @@
+ 
+             if hotkey:
+                 # Handle other hotkeys
+-                keys = hotkey.split()  # Split the keys by space
++                keys = [key.lower() for key in hotkey.split()]  # PyAutoGUI uses lowercase key names
+                 pyautogui_code += f"\npyautogui.hotkey({', '.join([repr(k) for k in keys])})"
+         
+         elif action_type == "type":

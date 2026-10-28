@@ -22,7 +22,7 @@ export PYTHONPATH=/data/songweishuai/envs/osworld/lib/python3.12/site-packages
 export DOCKER_HOST=unix:///data/songweishuai/evo-podman.sock
 ```
 
-共享服务器上必须串行执行 arm。每轮开始前检查现场，只允许使用启动器生成的
+旧启动器和未隔离的 provider 必须串行执行 arm。每轮开始前检查现场，只允许使用启动器生成的
 `evo-m2-*` 容器名；绝不批量清理容器或全局终止 QEMU。
 
 ## 运行
@@ -49,6 +49,20 @@ $PYTHON -m experiments.m2_small_eval.run_arm \
 
 启动器拒绝覆盖已有 arm。重新实验必须使用新的 output root，不能删除旧结果后
 原地重跑。
+
+## 最小重复验证与并行
+
+`parallel_pilot.py` 在固定任务分片上并行启动单环境 runner，比较无记忆与
+从空记忆开始的 online，各重复三轮。算法保持当前实现；每个 worker 的
+记忆逐轮继承，global_notes 仅在本分片共享。
+
+使用前应用外部补丁 `0007-isolate-parallel-worker-ports-and-assets.patch`，
+设置 `OSWORLD_PORT_LOCK_DIR`，并先验证两个容器同时启动、无端口串扰、
+截图和 MCP 服务正常且能精确回收。
+
+具体设计见 `doc/plan/2026-10-12/最小验证与并行评测.md`。可先用 `--dry-run`
+查看任务分片与两臂顺序。运行后 `status.json` 和 `summary.json` 自动更新；
+缺结果和基础设施错误会中止后续轮次，不使用残缺种子。
 
 ## 汇总
 

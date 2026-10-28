@@ -1,0 +1,57 @@
+--- a/desktop_env/desktop_env.py
++++ b/desktop_env/desktop_env.py
+@@ -444,6 +444,7 @@
+             if i < 2:
+                 time.sleep(1)
+ 
++        read_state = None
+         tool_name = None
+         if cur_id in app_list:
+             cur_app = app_list[cur_id]['app_name']
+@@ -456,7 +457,8 @@
+                 command += f"{class_name}.env_info(); "
+                 command += f"{class_name}.print_result();"
+                 from evotree.observation_io import read_python_output
+-                app_info = read_python_output(self.controller, command)
++                def read_state():
++                    return read_python_output(self.controller, command)
+             else:
+                 app_info = None
+         else:
+@@ -467,15 +469,22 @@
+         if self.action_space == 'mcp':
+             tool_list = self.get_mcp_tool_list(tool_name)
+ 
++        import json
++        from evotree.current_observation import capture_current_observation
++        captured = capture_current_observation(
++            read_state, self.controller.get_screenshot,
++            action_sequence=self._step_no,
++            source=(tool_name + ".env_info()" if read_state else "no application state reader"))
++        if captured["app_info"] is not None:
++            captured["app_info"] = json.dumps(captured["app_info"], ensure_ascii=False)
+         return {
+-            "screenshot": self.controller.get_screenshot(),
++            **captured,
+             "accessibility_tree": self.controller.get_accessibility_tree() if self.require_a11y_tree else None,
+             "terminal": self.controller.get_terminal_output() if self.require_terminal else None,
+             "instruction": self.instruction,
+             "apps": app_list,
+             "cur_window_id": cur_id,
+             "cur_app": cur_app,
+-            "app_info": app_info,
+             "tool_name": tool_name,
+             "tool_list": tool_list,
+         }
+--- a/mm_agents/owl_agent.py
++++ b/mm_agents/owl_agent.py
+@@ -783,7 +783,8 @@
+ 
+             images.append(image)
+ 
+-        messages = user_prompt
++        from evotree.current_observation import append_current_observation
++        messages = append_current_observation(user_prompt, obs, use_dashscope)
+         # print(messages)
+         
+         image_num = 0

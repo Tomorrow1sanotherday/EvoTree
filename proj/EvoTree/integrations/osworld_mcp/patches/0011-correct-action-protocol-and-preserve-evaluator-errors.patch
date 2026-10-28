@@ -1,0 +1,88 @@
+diff --git a/mm_agents/owl_agent.py b/mm_agents/owl_agent.py
+--- a/mm_agents/owl_agent.py
++++ b/mm_agents/owl_agent.py
+@@ -102,6 +102,10 @@
+ 
+     user_prompt = '''Please generate the next move according to the UI screenshot, instruction and previous actions.
+     Instruction: {instruction}
++    Action protocol: Every response MUST contain at least one <tool_call> with a JSON name and arguments.
++    If the task is complete, call computer_use with arguments {{"action":"terminate","status":"success"}}.
++    If you cannot complete it, call computer_use with arguments {{"action":"terminate","status":"failure"}}.
++    A <conclusion> alone is not an action. Do not claim completion without checking the current observation.
+     Previous actions:
+     {history}
+     Before answering, explain your reasoning step-by-step in <thinking></thinking> tags, and insert them before the <tool_call></tool_call> XML tags.\nAfter answering, summarize your action in <conclusion></conclusion> tags, and insert them after the <tool_call></tool_call> XML tags.'''
+@@ -816,7 +820,9 @@
+             
+             image_num += 1
+         
+-        try_times = 20
++        try_times = 5
++        format_retries = 0
++        prediction = None
+ 
+         # 生成prediction
+ 
+@@ -824,7 +830,7 @@
+             print(f'[DEBUG]: trying times {try_times}')
+             if try_times <= 0:
+                 print(f"Reach max retry times to fetch response from client, as error flag.")
+-                return "client error", ["DONE"], remove_base64_images(messages)
++                raise RuntimeError("Model request/action protocol retries exhausted; see original logged error")
+ 
+             try:
+                 if use_dashscope:
+@@ -898,8 +904,21 @@
+                 )
+                 break
+             
++            except (ValueError, TypeError, KeyError) as e:
++                format_retries += 1
++                logger.warning("Action protocol error (%s/3): %s", format_retries, e)
++                if format_retries >= 3:
++                    raise RuntimeError("Action protocol failed after 3 corrected requests") from e
++                messages.append({"role": "assistant", "content": str(prediction or "")})
++                messages.append({"role": "user", "content":
++                    "Your response did not contain a valid executable action. Return a JSON tool call "
++                    "inside <tool_call></tool_call>. If you are finished, explicitly call computer_use "
++                    "with action=terminate and status=success or failure. A conclusion alone cannot "
++                    "end the task. Use the same current observation; do not assume an action ran."})
++                try_times -= 1
++                continue
+             except Exception as e:
+-                # print(f"Error when fetching response from client, with response: {response}")
++                # API/transport failures remain distinct from format correction.
+                 print(f"Error when fetching response from client, with error: {e}")
+                 if prediction:
+                     from pathlib import Path
+@@ -913,7 +932,7 @@
+                 time.sleep(1)
+ 
+         if prediction is None:
+-            return "client error", ["DONE"], remove_base64_images(messages)
++            raise RuntimeError("Model request/action protocol retries exhausted; see original logged error")
+ 
+         self.history_responses.append(prediction)
+         self.thoughts.append(prediction)
+diff --git a/lib_run_single_e2e.py b/lib_run_single_e2e.py
+--- a/lib_run_single_e2e.py
++++ b/lib_run_single_e2e.py
+@@ -77,12 +77,15 @@
+         step_idx += 1
+ 
+     time.sleep(10)
+-    for _ in range(5):
++    for attempt in range(5):
+         try:
+             result = env.evaluate()
+-        except:
++            break
++        except Exception:
++            logger.exception("Evaluator failed on attempt %s/5", attempt + 1)
++            if attempt == 4:
++                raise
+             time.sleep(3)
+-            continue
+     logger.info("Result: %.2f", result)
+     scores.append(result)
+     with open(os.path.join(example_result_dir, "result.txt"), "w", encoding="utf-8") as f:

@@ -1,0 +1,37 @@
+diff --git a/tools/package/libreoffice_impress.py b/tools/package/libreoffice_impress.py
+@@ -784,22 +784,30 @@
+                 slides_to_modify = [pages.getByIndex(slide_index)]
+             else:
+                 slides_to_modify = [pages.getByIndex(
+                     i) for i in range(page_count)]
+             for slide in slides_to_modify:
++                # DrawPage exposes the slide background as the Background
++                # FillProperties object. Setting FillStyle/FillColor directly
++                # on DrawPage raises a UNO property error in the injected
++                # LibreOffice runtime and the MCP tool returns False.
++                fill_props = cls.ctx.ServiceManager.createInstanceWithContext(
++                    "com.sun.star.drawing.FillProperties", cls.ctx
++                )
+                 if image_path and os.path.exists(image_path):
+                     abs_path = os.path.abspath(image_path)
+                     file_url = uno.systemPathToFileUrl(abs_path)
+-                    slide.FillStyle = uno.Enum(
++                    fill_props.FillStyle = uno.Enum(
+                         "com.sun.star.drawing.FillStyle", "BITMAP")
+-                    slide.FillBitmapURL = file_url
+-                    slide.FillBitmapMode = uno.Enum(
++                    fill_props.FillBitmapURL = file_url
++                    fill_props.FillBitmapMode = uno.Enum(
+                         "com.sun.star.drawing.BitmapMode", "STRETCH")
+                 elif rgb_color is not None:
+-                    slide.FillStyle = uno.Enum(
++                    fill_props.FillStyle = uno.Enum(
+                         "com.sun.star.drawing.FillStyle", "SOLID")
+-                    slide.FillColor = rgb_color
++                    fill_props.FillColor = rgb_color
++                slide.setPropertyValue("Background", fill_props)
+             cls.ret = "Background set successfully"
+             return True
+         except Exception as e:
+             cls.ret = f"Error setting background: {str(e)}"
+             return False

@@ -87,10 +87,16 @@ class StateSig:
     dialog: Optional[str] = None
     # facts 不进主键：用 default_factory 且在 key() 里显式排除
     facts: dict[str, bool] = field(default_factory=dict, compare=False)
+    context: str = ""
 
     def key(self) -> tuple[str, str, str]:
-        """返回用于归堆的主键（仅 app + window + dialog，不含 facts）。"""
-        return (self.app, self.window, self.dialog or "")
+        """Identity includes optional observed execution context, not facts.
+
+        Legacy observations keep the three-field key. OSWorld can supply a
+        context to prevent identical window titles from merging task stages.
+        """
+        window_key = self.window if not self.context else self.window + "\x1f" + self.context
+        return (self.app, window_key, self.dialog or "")
 
 
 # --------------------------------------------------------------------------- #

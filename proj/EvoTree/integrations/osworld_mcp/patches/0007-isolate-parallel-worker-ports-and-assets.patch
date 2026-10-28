@@ -1,0 +1,91 @@
+diff --git a/desktop_env/providers/docker/provider.py b/desktop_env/providers/docker/provider.py
+--- a/desktop_env/providers/docker/provider.py
++++ b/desktop_env/providers/docker/provider.py
+@@ -7,7 +7,7 @@
+ import psutil
+ import requests
+ from docker.errors import DockerException
+-from filelock import FileLock
++from filelock import FileLock, SoftFileLock
+ from pathlib import Path
+ 
+ from desktop_env.providers.base import Provider
+@@ -26,7 +26,7 @@
+ 
+ class DockerProvider(Provider):
+     def __init__(self, region: str):
+-        self.client = docker.from_env()
++        self.client = docker.from_env(timeout=int(os.getenv("OSWORLD_CONTAINER_API_TIMEOUT", "600")))
+         self.server_port = None
+         self.vnc_port = None
+         self.chromium_port = None
+@@ -39,7 +39,7 @@
+         self.environment = {"DISK_SIZE": "32G", "RAM_SIZE": "4G", "CPU_CORES": "4"}  # Modify if needed
+ 
+         temp_dir = Path(os.getenv("TEMP") if platform.system() == "Windows" else "/tmp")
+-        self.lock_file = temp_dir / "docker_port_allocation.lck"
++        self.lock_file = Path(os.getenv("OSWORLD_PORT_LOCK_FILE", str(temp_dir / "docker_port_allocation.lck")))
+         self.lock_file.parent.mkdir(parents=True, exist_ok=True)
+ 
+     @staticmethod
+@@ -166,6 +166,11 @@
+     def _get_used_ports(self):
+         """Get all currently used ports (both system and Docker)."""
+         system_ports = set(conn.laddr.port for conn in psutil.net_connections())
++        # With host networking, QEMU binds directly in the host namespace.
++        # Listing other containers is unnecessary and Podman pid=host inspect
++        # can fail while a healthy VM is running without cgroup metadata.
++        if os.getenv("OSWORLD_PORT_RANGE_SIZE") and os.getenv("OSWORLD_PODMAN", "1") != "0":
++            return system_ports
+         docker_ports = set()
+         for container in self.client.containers.list():
+             ports = container.attrs["NetworkSettings"]["Ports"]
+@@ -179,7 +184,7 @@
+         """Find next available port starting from start_port."""
+         used_ports = self._get_used_ports()
+         port = start_port
+-        while port < 65354:
++        while port < min(65354, start_port + int(os.getenv("OSWORLD_PORT_RANGE_SIZE", "60354"))):
+             if port not in used_ports:
+                 return port
+             port += 1
+@@ -368,7 +373,7 @@
+ 
+         # push mcp_server.tgz + slim client from host /tmp into the VM
+         try:
+-            tgz = base64.b64encode(open("/tmp/mcp_server.tgz", "rb").read()).decode()
++            tgz = base64.b64encode(open(os.path.join(os.getenv("OSWORLD_MCP_ASSET_DIR", "/tmp"), "mcp_server.tgz"), "rb").read()).decode()
+             self._vm_exec(
+                 "python3 -c \"import base64;open('/home/user/mcp_server.tgz','wb')"
+                 f".write(base64.b64decode('{tgz}'))\"", timeout=180)
+@@ -381,7 +386,7 @@
+                 "export FASTMCP_SHOW_SERVER_BANNER=false\\n"
+                 "setsid python3 server.py >/tmp/mcpserver.log 2>&1 </dev/null &\\n' "
+                 "> /home/user/mcp_server/launch_server.sh")
+-            client = base64.b64encode(open("/tmp/osworld_mcp_client_slim.py", "rb").read()).decode()
++            client = base64.b64encode(open(os.path.join(os.getenv("OSWORLD_MCP_ASSET_DIR", "/tmp"), "osworld_mcp_client_slim.py"), "rb").read()).decode()
+             self._vm_exec(
+                 "python3 -c \"import base64;open('/home/user/osworld_mcp_client.py','wb')"
+                 f".write(base64.b64decode('{client}'))\"", timeout=120)
+@@ -391,7 +396,8 @@
+ 
+     def start_emulator(self, path_to_vm: str, headless: bool, os_type: str):
+         # Use a single lock for all port allocation and container startup
+-        lock = FileLock(str(self.lock_file), timeout=LOCK_TIMEOUT)
++        lock_type = SoftFileLock if os.getenv("OSWORLD_PORT_LOCK_FILE") else FileLock
++        lock = lock_type(str(self.lock_file), timeout=LOCK_TIMEOUT)
+ 
+         # --- OSWorld-MCP podman / host-net smoke-test config (toggle via OSWORLD_PODMAN=0) ---
+         use_hostnet = os.getenv("OSWORLD_PODMAN", "1") != "0"
+diff --git a/run_multienv_e2e.py b/run_multienv_e2e.py
+--- a/run_multienv_e2e.py
++++ b/run_multienv_e2e.py
+@@ -21,7 +21,7 @@
+ logger = logging.getLogger()
+ logger.setLevel(logging.DEBUG)
+ 
+-datetime_str: str = datetime.datetime.now().strftime("%Y%m%d@%H%M%S")
++datetime_str: str = datetime.datetime.now().strftime("%Y%m%d@%H%M%S") + f"-{os.getpid()}"
+ 
+ file_handler = logging.FileHandler(
+     os.path.join("logs", "normal-{:}.log".format(datetime_str)), encoding="utf-8"

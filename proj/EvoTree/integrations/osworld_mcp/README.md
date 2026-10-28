@@ -54,6 +54,40 @@ patch series。补丁目标是 OSWorld 源码树根目录，包含：
 
 ## 基线与目标
 
+### 2026-10-12 并行运行补丁
+
+### 2026-10-13 动作执行修复
+
+`0012-preserve-operations-before-termination.patch` 以r5实际运行副本为基线。
+多工具回复遇terminate时保留前面操作，追加DONE/FAIL并停止；移除agent在
+最后一个模型turn覆盖整个操作列表的FAIL分支，由runner控制步数。动作
+解析异常不再合成DONE。记忆算法不变。
+
+回归脚本 `scripts/verify_osworld_dispatch.py /path/to/mm_agents/owl_agent.py`
+用AST提取实际动作组装代码，在不启动VM/模型的情况下检查11种执行语义。
+`parallel_pilot` 现在也会检查每次回复提出的调用数/工具顺序与轨迹一致，
+避免静默丢操作的运行被计为正常结果。
+
+真实smoke使用完整predict和任务runner，在一次回复中完成重命名或Calc
+复制后terminate，要求轨迹动作齐全且evaluator=1，再检验真实模型调用链。
+该smoke通过后才重启正式实验，smoke记忆不进入实验种子。
+
+`0007-isolate-parallel-worker-ports-and-assets.patch` 的基线是 A800 当前实际
+runner/provider，包含此前保存到 `temp/osworld_port_fix/provider.py` 的动态端口
+及 owned-QEMU 等修复；它不能直接接在早期 `0003` 的旧 provider 后面。
+必须先 `git apply --check`，不匹配时检查差异，不强行模糊应用。
+
+该补丁为独立 worker 提供有界端口范围、独立锁文件（网络盘使用 SoftFileLock）、
+可配置 MCP 资产目录，并让并行 runner 的日志文件带 PID。容器 API 超时
+默认 600 秒，避免并行复制容器层超过旧的 60 秒；隔离的 host-network 模式
+查宿主监听端口，避免运行中容器枚举的 cgroup 错误。端口范围由
+`run_arm --worker-slot` 分配，每个子进程仍是 `--num_envs 1`。
+容器名由不同 label 分配；不要仅把旧 runner 的 `num_envs` 改成 4。
+
+新增两个运行变量：`OSWORLD_PORT_LOCK_DIR`（启动器派生每个 slot 的锁文件）
+和 `OSWORLD_MCP_ASSET_DIR`（含 server tgz、slim client）。没有隔离变量时
+保留旧串行 provider 的默认锁与 `/tmp` 资产路径。
+
 补丁由以下只读基线生成：
 
 ```text
@@ -119,3 +153,90 @@ HF_ENDPOINT=https://hf-mirror.com python -m py_compile \
 
 还应检查 provider 不含任何全局 QEMU kill。共享服务器上不得用
 `pkill -x qemu`、`pkill -f qemu` 或批量 Podman 清理来代替精确回收。
+
+## r6 memory regressions (2026-10-13)
+
+Apply `0013-record-corresponding-tool-call-and-result.patch` after the existing
+runner patches. It records the wrapper's corresponding `tool_call` and each
+action's `exe_result`, so later audits can check memory attribution and business
+failure independently of execution completeness.
+
+The EvoTree wrapper aligns parsed calls with returned actions before execution.
+Ambiguous multi-call GUI records without an aligned call raise an error instead
+of silently storing the first call. The offline adapter aligns complete legacy
+turns before dropping termination records and rejects incomplete multi-call
+turns. MCP parameter values remain examples outside the action aggregation key;
+executable command text is retained intact.
+
+For real observations containing `app_info`, state identity also includes the
+preceding actual action and a digest of available structured sheet information.
+The initial frame uses a stable task root, so asynchronous window registration
+cannot turn the same reset into incompatible unknown/app nodes. Identical JSON
+objects printed repeatedly by Calc's environment getter are decoded as one.
+This distinguishes initial, source/destination, modified-content and later
+execution contexts without extra model or VM calls. It is an implementation
+change to state representation, not a claim that GUI target semantics or transfer
+to new task parameters have been solved. Existing snapshots remain readable,
+but old snapshots without context do not match contextual nodes; start a fresh
+learning chain rather than inheriting r6's incorrectly attributed memory.
+
+Known Calc mutators returning business `false` (or `None` for `copy_sheet`) are
+recorded as cautions even when the MCP invocation reports `is_error=False`.
+Queries returning false are not classified as failures. Self-loops no longer
+produce lookahead advice, and successor hints describe candidates without
+claiming one-step completion. Injection reports count unique model turns.
+
+Run `python -m pytest -q` in the EvoTree project for regression checks. Real VM
+memory smoke must additionally check executed calls against stored actions,
+preserved parameters, fresh-reset seed retrieval and objective evaluator scores.
+Fixed model responses in that smoke are harness diagnostics; their scores do not
+measure model ability or memory benefit.
+
+`0014-support-model-request-lock-on-shared-filesystems.patch` adds an explicit
+`OSWORLD_MODEL_REQUEST_LOCK_MODE=soft` option for locks in project directories
+on filesystems where `flock(LOCK_UN)` fails. It selects `SoftFileLock`; the
+default keeps the existing `FileLock`. The smoke uses a uniquely scoped lock
+inside its own runtime directory and releases it on normal completion.
+
+`0015-normalize-gui-hotkey-names.patch` converts GUI hotkey names to lowercase
+before passing them to PyAutoGUI. Uppercase model outputs such as CTRL/ALT/T,
+ESC and F2 otherwise produce no intended key event. Verify the real installed
+assembler with `python scripts/verify_osworld_hotkeys.py /path/to/mm_agents/owl_agent.py`.
+
+`0016-validate-gui-actions-and-support-middle-click.patch` completes the advertised
+middle-click action in both parsing and PyAutoGUI dispatch. It matches the parsed
+tool name exactly and rejects unsupported GUI action names with `ValueError`,
+allowing the existing format-correction request to run. This fixes r8's real
+`action="TAB"` response (the correct form is `action="key", keys=["TAB"]`), which
+previously raised an uninitialized `action_type` error outside format correction.
+Verify the installed parser with `scripts/verify_osworld_action_schema.py`;
+passing the saved failure JSON as a second argument also checks that regression.
+
+`0017-record-real-runner-exceptions.patch` preserves exception type/message and
+traceback instead of labeling every exception as a timeout. The failed attempt
+is still invalid for evaluation and memory inheritance.
+
+The pilot now supports `--resume` with an identical plan. Completed arms are
+validated and reused; incomplete baseline episodes are archived before retry,
+and scored baseline episodes are kept byte-for-byte. Partial online arms are
+rejected because their memory may already include incomplete attempts. This is
+explicit recovery from an infrastructure failure, not automatic score retries.
+
+`0019-bind-current-state-to-capture-and-agent-prompt.patch` applies after the
+read-only observation retry patch (`0018`) and existing OwlAgent fixes. It brackets
+each screenshot with fresh application `env_info()` reads, records capture IDs,
+action sequence numbers, acquisition timestamps and hashes, and retries only
+observations when the two reads differ. Persistently unstable state is unknown;
+the intended action is never treated as proof. Rendering freshness remains
+explicitly unverified even when structured reads agree.
+
+OwlAgent previously used `exe_result` for previous-tool context but omitted the
+fresh `app_info` field from the actual model prompt. Patch 0019 includes that
+current observation separately for every arm, including baseline. The retrieval
+hook and agent now consume the same captured state. These are harness changes;
+they do not make the Calc role guard application-independent or establish any
+memory success-rate benefit. Original runs and bank snapshots are not rewritten.
+
+Generate files for a new isolated runner using
+`scripts/patch_osworld_observations.py --runner OLD --output NEW --patch-file FILE`.
+The generator refuses unrecognized source and existing output files.

@@ -1,0 +1,74 @@
+diff --git a/mm_agents/owl_agent.py b/mm_agents/owl_agent.py
+--- a/mm_agents/owl_agent.py
++++ b/mm_agents/owl_agent.py
+@@ -205,9 +205,12 @@
+         action = text.split("<tool_call>")[-1].split("<conclusion>")[0]
+         action = action[:action.rfind('}') + 1]
+ 
+-    action_json = json.loads(action.strip('\n'))['arguments']
+-
+-    if "computer_use" in action:
++    parsed_call = json.loads(action.strip('\n'))
++    if not isinstance(parsed_call, dict) or not isinstance(parsed_call.get('name'), str) or not isinstance(parsed_call.get('arguments'), dict):
++        raise ValueError('Tool call requires a name and object arguments')
++    action_json = parsed_call['arguments']
++
++    if parsed_call['name'] == 'computer_use':
+         current_image_ele = update_image_size_({'image': "None", 'width': width, 'height': height})
+ 
+         if action_json['action'] == "key":
+@@ -241,6 +244,10 @@
+             action_type = "right_single"
+             x, y = convert_point_format([action_json['coordinate'][0], action_json['coordinate'][1]], current_image_ele, src_format='abs_resized', tgt_format='abs_origin', model_name=model_name)
+             action_inputs = {'start_box': [x, y]}
++        elif action_json['action'] == "middle_click":
++            action_type = "middle_single"
++            x, y = convert_point_format([action_json['coordinate'][0], action_json['coordinate'][1]], current_image_ele, src_format='abs_resized', tgt_format='abs_origin', model_name=model_name)
++            action_inputs = {'start_box': [x, y]}
+         elif action_json['action'] == "double_click":
+             action_type = "left_double"
+             x, y = convert_point_format([action_json['coordinate'][0], action_json['coordinate'][1]], current_image_ele, src_format='abs_resized', tgt_format='abs_origin', model_name=model_name)
+@@ -257,6 +264,8 @@
+         elif action_json['action'] == "wait":
+             action_type = "wait"
+             action_inputs = {'time': action_json['time'] if 'time' in action_json else 1}
++        else:
++            raise ValueError(f"Unsupported computer_use action: {action_json.get('action')!r}; use an action from the tool schema")
+ 
+     else:
+         # mcp tool call
+@@ -410,7 +419,7 @@
+             pixels = action_inputs.get("pixels")
+             pyautogui_code += f"\npyautogui.scroll({pixels})"
+ 
+-        elif action_type in ["click", "left_single", "left_double", "right_single", "hover"]:
++        elif action_type in ["click", "left_single", "left_double", "right_single", "middle_single", "hover"]:
+             # Parsing mouse click actions
+             start_box = action_inputs.get("start_box")
+             start_box = str(start_box)
+@@ -431,6 +440,8 @@
+                     pyautogui_code += f"\npyautogui.doubleClick({x}, {y}, button='left')"
+                 elif action_type == "right_single":
+                     pyautogui_code += f"\npyautogui.click({x}, {y}, button='right')"
++                elif action_type == "middle_single":
++                    pyautogui_code += f"\npyautogui.click({x}, {y}, button='middle')"
+                 elif action_type == "hover":
+                     pyautogui_code += f"\npyautogui.moveTo({x}, {y})"
+         
+@@ -907,7 +918,7 @@
+             
+             except (ValueError, TypeError, KeyError) as e:
+                 format_retries += 1
+-                logger.warning("Action protocol error (%s/3): %s", format_retries, e)
++                logger.warning("Action protocol error (%s/3): %s; reply=%r", format_retries, e, str(prediction or "")[:16000])
+                 if format_retries >= 3:
+                     raise RuntimeError("Action protocol failed after 3 corrected requests") from e
+                 messages.append({"role": "assistant", "content": str(prediction or "")})
+@@ -920,6 +931,7 @@
+                 continue
+             except Exception as e:
+                 # API/transport failures remain distinct from format correction.
++                logger.exception("Model request/response processing failed")
+                 print(f"Error when fetching response from client, with error: {e}")
+                 if prediction:
+                     from pathlib import Path

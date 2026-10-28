@@ -1,0 +1,12 @@
+diff --git a/lib_run_single_e2e.py b/lib_run_single_e2e.py
+--- a/lib_run_single_e2e.py
++++ b/lib_run_single_e2e.py
+@@ -68,6 +68,8 @@
+                     "info": info,
+                     "screenshot_file": f"step_{step_idx + 1}_{action_timestamp}.png",
+                     "messages": input_messages,
++                    "tool_call": (getattr(env, "last_raw_action", None) or {}).get("tool_call"),
++                    "exe_result": obs.get("exe_result"),
+                 }
+                 f.write(json.dumps(traj_json))
+                 f.write("\n")

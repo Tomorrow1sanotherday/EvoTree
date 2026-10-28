@@ -1,0 +1,40 @@
+diff --git a/mm_agents/owl_agent.py b/mm_agents/owl_agent.py
+--- a/mm_agents/owl_agent.py
++++ b/mm_agents/owl_agent.py
+@@ -947,7 +947,7 @@
+             )
+         except Exception as e:
+             print(f"Parsing action error: {prediction}, with error:\n{e}")
+-            return f"Parsing action error: {prediction}, with error:\n{e}", ["DONE"], remove_base64_images(messages)
++            raise RuntimeError("Action parsing failed after model response validation") from e
+ 
+         this_step_conclusion = parsed_responses[0]['conclusion']
+         self.history_conclusion.append(this_step_conclusion)
+@@ -956,11 +956,11 @@
+         for parsed_response in parsed_responses:
+             if "action_type" in parsed_response:
+                 if parsed_response["action_type"] == "fail":
+-                    self.actions.append(actions)
+-                    return prediction, ["FAIL"], remove_base64_images(messages)
++                    actions.append("FAIL")
++                    break
+                 elif parsed_response["action_type"] == "finished":
+-                    self.actions.append(actions)
+-                    return prediction, ["DONE"], remove_base64_images(messages)
++                    actions.append("DONE")
++                    break
+             
+             pyautogui_code = parsing_response_to_pyautogui_code(
+                 parsed_response,
+@@ -972,9 +972,8 @@
+         
+         self.actions.append(actions)
+ 
+-        if len(self.history_responses) >= self.max_trajectory_length:
+-            # Default to FAIL if exceed max steps
+-            actions = ["FAIL"]
++        # The runner enforces max_steps after this model turn. Do not replace
++        # valid final-turn operations with FAIL before they reach the VM.
+ 
+         return prediction, actions, remove_base64_images(messages)
+ 

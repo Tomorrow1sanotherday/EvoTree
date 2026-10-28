@@ -26,13 +26,14 @@ from __future__ import annotations
 import logging
 import json
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping, Optional
 
 from .episode import Episode, EpisodeStep, RuntimeStep
 from .memory import EvoTreeMemory
+from .current_observation import observation_record
 from .retrieval import Cheatsheet, render_cheatsheet
 
 logger = logging.getLogger(__name__)
@@ -45,6 +46,7 @@ class BeforeModelResult:
     cheatsheet: Cheatsheet
     text: str
     reranked_tools: list[str]
+    current_observation: dict = field(default_factory=dict)
 
 
 class EvoTreeRuntime:
@@ -77,13 +79,20 @@ class EvoTreeRuntime:
         """在每次模型调用前检索记忆。"""
         if self.instruction is None:
             raise RuntimeError("Call begin() before before_model()")
+        if self.memory.retrieval_mode == 'dual_summary':
+            from .situation_summary import previous_action
+            observation = dict(observation)
+            observation['executed_prefix'] = [previous_action(
+                self.memory.distiller.distill_action(s.raw_action), s.action_success and s.note is None)
+                for s in self._steps[-4:]]
         cheatsheet = self.memory.read_cheatsheet(
             self.instruction, observation, candidate_tools
         )
         result = BeforeModelResult(
             cheatsheet=cheatsheet,
-            text=render_cheatsheet(cheatsheet),
+            text=self.memory.render(cheatsheet),
             reranked_tools=list(cheatsheet.reranked_tools),
+            current_observation=observation_record(observation),
         )
         self._log_retrieval(observation, candidate_tools, result)
         self._write_retrieval_event(observation, candidate_tools, result)
@@ -111,7 +120,7 @@ class EvoTreeRuntime:
             return
         path = Path(root) / "retrieval.jsonl"
         sig = self.memory.distiller.distill_state(observation)
-        template = self.memory.distiller.distill_task(self.instruction or "")
+        template = self.memory.lookup_task(self.instruction or "")
         tree = self.memory.forest.get_tree(template.template_id)
         node = tree.node_for_signature(sig) if tree is not None else None
         event = {
@@ -135,6 +144,18 @@ class EvoTreeRuntime:
             ],
             "cautions": list(result.cheatsheet.cautions),
             "candidate_tools": list(candidate_tools or []),
+            "retrieval_mode": self.memory.retrieval_mode,
+            "task_sources": [item.template_id for item in getattr(result.cheatsheet, "task_experiences", [])],
+            "state_sources": [{"template": item.template_id, "node": item.node_id, "match": item.match}
+                              for item in getattr(result.cheatsheet, "state_experiences", [])],
+            "omitted": list(getattr(result.cheatsheet, "omitted", [])),
+            "observed_conditions": dict(getattr(result.cheatsheet, "observed_conditions", {})),
+            "rejected_states": list(getattr(result.cheatsheet, "rejected_states", [])),
+            "current_situation": getattr(result.cheatsheet, "current_situation", None),
+            "summary_comparisons": list(getattr(result.cheatsheet, "summary_comparisons", [])),
+            "rendered_task_records": int(getattr(result.cheatsheet, "rendered_task_records", 0)),
+            "rendered_state_records": int(getattr(result.cheatsheet, "rendered_state_records", 0)),
+            "current_observation": result.current_observation,
         }
         path.parent.mkdir(parents=True, exist_ok=True)
         with path.open("a", encoding="utf-8") as handle:
@@ -159,8 +180,14 @@ class EvoTreeRuntime:
         """
         if not logger.isEnabledFor(logging.INFO):
             return
+        if not hasattr(self.memory, 'forest'):
+            logger.info('[memory] mode=%s task_records=%d tools=%s',
+                        self.memory.retrieval_mode,
+                        getattr(result.cheatsheet, 'rendered_task_records', 0),
+                        list(candidate_tools or []))
+            return
         sig = self.memory.distiller.distill_state(observation)
-        template = self.memory.distiller.distill_task(self.instruction or "")
+        template = self.memory.lookup_task(self.instruction or "")
         tree = self.memory.forest.get_tree(template.template_id)
         node = tree.node_for_signature(sig) if tree is not None else None
         logger.info(

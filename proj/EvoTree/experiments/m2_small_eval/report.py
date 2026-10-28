@@ -36,12 +36,19 @@ def prompt_marker_hits(path: Path) -> tuple[int, int]:
     """Count model steps whose recorded prompt contains EvoTree sections."""
     experience_hits = 0
     caution_hits = 0
+    seen_turns = set()
     for line in path.read_text(encoding="utf-8").splitlines():
         if not line.strip():
             continue
         record = json.loads(line)
         if not isinstance(record, dict):
             continue
+        prediction = record.get("prediction")
+        if isinstance(prediction, str) and "step_num" in record:
+            turn = (record["step_num"], prediction)
+            if turn in seen_turns:
+                continue
+            seen_turns.add(turn)
         messages = record.get("messages")
         if not isinstance(messages, list):
             continue
